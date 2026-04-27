@@ -8,7 +8,11 @@ import { closeBrackets } from '@codemirror/autocomplete';
 import { java } from '@codemirror/lang-java';
 import { tags } from '@lezer/highlight';
 
-const WANDBOX_URL = 'https://wandbox.org/api/compile.json';
+// On Vercel: same-domain proxy avoids CORS entirely.
+// On localhost (astro dev): fall back to Wandbox directly.
+const EXEC_URL = typeof window !== 'undefined' && window.location.hostname === 'localhost'
+  ? 'https://wandbox.org/api/compile.json'
+  : '/api/execute';
 
 // ── CobraLink theme ───────────────────────────────────────────
 const cobraTheme = EditorView.theme({
@@ -87,7 +91,7 @@ async function runCode(code, stdin = '') {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 25000);
   try {
-    const res = await fetch(WANDBOX_URL, {
+    const res = await fetch(EXEC_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ compiler: 'openjdk-head', code, stdin }),
