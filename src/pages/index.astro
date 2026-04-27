@@ -6,10 +6,17 @@ const allLessons = await getCollection('lessons', ({ data }) => !data.draft);
 
 const TRACKS = [
   {
+    id: 'frc-intro',
+    label: 'FRC Intro',
+    level: 'Start here — no experience needed',
+    desc: 'What FRC is, how a match works, and how code connects to the physical robot.',
+    color: '#5df5a0',
+  },
+  {
     id: 'fundamentals',
     label: 'Fundamentals',
-    level: 'Start here',
-    desc: 'What programs are, how robots execute them, and how to think like a programmer.',
+    level: 'After FRC Intro',
+    desc: 'What programs are, types, loops, functions, state machines, and debugging.',
     color: 'var(--accent)',
   },
   {

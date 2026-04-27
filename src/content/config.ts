@@ -4,6 +4,7 @@ const lessons = defineCollection({
   type: 'content',
   schema: z.object({
     track: z.enum([
+      'frc-intro',       // what FRC is, hardware, how code runs
       'fundamentals',    // core programming concepts
       'robot-code',      // WPILib, subsystems, commands
       'motion-control',  // PID, feedforward, profiling
