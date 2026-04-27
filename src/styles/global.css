@@ -614,20 +614,22 @@ a { color: inherit; text-decoration: none; }
 }
 .quiz-retry:hover { background: rgba(200,60,60,0.1); }
 
-/* ── CodeEditor ───────────────────────────────────────────── */
+/* ── CodeEditor (CodeMirror 6) ─────────────────────────────── */
 .ce-root {
   border: 1px solid var(--border);
   border-radius: var(--r-lg);
   overflow: hidden;
   margin: 1.5rem 0;
-  background: var(--surface);
+  background: #07101a;
 }
-.ce-editor-header {
+
+/* Header bar */
+.ce-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 0.75rem;
   padding: 0.5rem 0.9rem;
-  background: rgba(0,0,0,0.35);
+  background: rgba(0,0,0,0.45);
   border-bottom: 1px solid var(--border);
 }
 .ce-label {
@@ -644,30 +646,71 @@ a { color: inherit; text-decoration: none; }
   letter-spacing: 0.1em;
   text-transform: uppercase;
 }
-.ce-editor-area { position: relative; }
-.ce-textarea {
-  display: block;
-  width: 100%;
-  min-height: 200px;
-  padding: 0.85rem 1rem;
-  background: #0d1117;
-  color: #c9d1d9;
-  font-family: "JetBrains Mono", "Fira Mono", "Courier New", monospace;
-  font-size: 0.84rem;
-  line-height: 1.65;
-  border: none;
-  outline: none;
-  resize: vertical;
-  tab-size: 4;
+.ce-shortcut {
+  margin-left: auto;
+  font-size: 0.64rem;
+  color: #2d4560;
+  font-family: "JetBrains Mono", monospace;
 }
-.ce-textarea:focus { outline: none; box-shadow: inset 0 0 0 1px var(--accent); }
 
+/* Error banner */
+.ce-err-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.45rem 0.9rem;
+  background: rgba(240,128,128,0.12);
+  border-bottom: 1px solid rgba(240,128,128,0.3);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.8rem;
+  color: #f08080;
+}
+.ce-err-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  background: rgba(240,128,128,0.25);
+  font-size: 0.65rem;
+  font-weight: bold;
+  flex-shrink: 0;
+}
+.ce-err-close {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: #f08080;
+  cursor: pointer;
+  font-size: 0.7rem;
+  opacity: 0.6;
+  padding: 0 0.2em;
+}
+.ce-err-close:hover { opacity: 1; }
+
+/* CodeMirror editor container */
+.ce-editor-wrap {
+  min-height: 200px;
+  border-bottom: 1px solid var(--border);
+}
+.ce-editor-wrap .cm-editor {
+  min-height: 200px;
+}
+.ce-editor-wrap .cm-editor.cm-focused {
+  outline: none;
+  box-shadow: inset 0 0 0 1px rgba(77,198,255,0.35);
+}
+.ce-editor-wrap .cm-scroller {
+  min-height: 200px;
+}
+
+/* Run bar */
 .ce-run-bar {
   display: flex;
   align-items: center;
   gap: 0.875rem;
   padding: 0.6rem 0.9rem;
-  background: rgba(0,0,0,0.25);
+  background: rgba(0,0,0,0.35);
   border-top: 1px solid var(--border);
 }
 .ce-run-btn {
@@ -689,15 +732,16 @@ a { color: inherit; text-decoration: none; }
 .ce-run-btn:disabled { opacity: 0.55; cursor: not-allowed; }
 .ce-run-btn.ce-running { background: var(--dark-grey); color: var(--text); }
 
-.ce-score { font-family: "Kanit", sans-serif; font-size: 0.88rem; color: var(--light-grey); }
+.ce-score     { font-family: "Kanit", sans-serif; font-size: 0.88rem; color: var(--light-grey); }
 .ce-score-pass { color: #5df5a0; }
 .ce-score-fail { color: #f08080; }
-.ce-confetti { font-size: 0.88rem; color: #5df5a0; }
+.ce-exec-time { font-family: "JetBrains Mono", monospace; font-size: 0.72rem; color: #2d4560; }
+.ce-confetti  { font-size: 0.88rem; color: #5df5a0; font-family: "Kanit", sans-serif; }
 .ce-run-error { padding: 0.4rem 0.9rem; font-size: 0.83rem; color: #f08080; background: rgba(200,60,60,0.08); }
 
 /* Test rows */
 .ce-tests { border-top: 1px solid var(--border); }
-.ce-test { border-bottom: 1px solid var(--border-subtle); }
+.ce-test  { border-bottom: 1px solid var(--border-subtle); }
 .ce-test:last-child { border-bottom: none; }
 
 .ce-test-header {
@@ -714,20 +758,16 @@ a { color: inherit; text-decoration: none; }
 }
 .ce-test-header:hover { background: var(--surface-hover); }
 
-.ce-test-dot {
-  width: 8px; height: 8px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
+.ce-test-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
 .ce-dot-pending { background: var(--dark-grey); }
 .ce-dot-pass    { background: #5df5a0; }
 .ce-dot-fail    { background: #f08080; }
 .ce-dot-error   { background: #f0b060; }
 
-.ce-test-label  { flex: 1; font-family: "Kanit", sans-serif; font-size: 0.875rem; color: var(--text); }
+.ce-test-label   { flex: 1; font-family: "Kanit", sans-serif; font-size: 0.875rem; color: var(--text); }
 .ce-test-verdict { font-size: 0.78rem; color: var(--dark-grey); }
-.ce-fail        { color: #f08080; }
-.ce-pending     { color: var(--dark-grey); }
+.ce-fail         { color: #f08080; }
+.ce-pending      { color: var(--dark-grey); }
 
 .ce-test-chevron {
   font-size: 0.5rem;
@@ -759,14 +799,18 @@ a { color: inherit; text-decoration: none; }
   word-break: break-all;
   flex: 1;
 }
-.ce-expected    { color: #5df5a0; }
-.ce-got-wrong   { color: #f08080; }
-.ce-stderr      { color: #f0b060; }
+.ce-expected  { color: #5df5a0; }
+.ce-got-wrong { color: var(--light-grey); }
+.ce-stderr    { color: #f0b060; }
 
-.ce-hint {
-  border-top: 1px solid var(--border-subtle);
-  padding: 0.6rem 0.9rem;
-}
+/* Character-level diff */
+.ce-diff { font-family: "JetBrains Mono", "Courier New", monospace; white-space: pre-wrap; }
+.ce-dc-ok  { color: var(--light-grey); }
+.ce-dc-add { background: rgba(240,128,128,0.28); color: #f08080; border-radius: 2px; }
+.ce-dc-del { text-decoration: line-through; color: #5df5a0; opacity: 0.7; }
+
+/* Hint */
+.ce-hint { border-top: 1px solid var(--border-subtle); padding: 0.6rem 0.9rem; }
 .ce-hint summary {
   cursor: pointer;
   font-family: "Kanit", sans-serif;

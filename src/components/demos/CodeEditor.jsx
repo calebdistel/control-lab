@@ -1,7 +1,84 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { EditorView, minimalSetup } from 'codemirror';
+import { EditorState, StateEffect, StateField } from '@codemirror/state';
+import { keymap, lineNumbers, highlightActiveLineGutter, highlightActiveLine, Decoration } from '@codemirror/view';
+import { defaultKeymap, historyKeymap, indentWithTab, history } from '@codemirror/commands';
+import { HighlightStyle, syntaxHighlighting, indentOnInput, bracketMatching } from '@codemirror/language';
+import { closeBrackets } from '@codemirror/autocomplete';
+import { java } from '@codemirror/lang-java';
+import { tags } from '@lezer/highlight';
 
 const PISTON_URL = 'https://emkc.org/api/v2/piston/execute';
 
+// ── CobraLink theme ───────────────────────────────────────────
+const cobraTheme = EditorView.theme({
+  '&': {
+    background: '#07101a',
+    color: '#c9d1d9',
+    fontSize: '0.845rem',
+    fontFamily: '"JetBrains Mono", "Fira Mono", "Courier New", monospace',
+  },
+  '.cm-scroller': { lineHeight: '1.65', fontFamily: 'inherit' },
+  '.cm-content': { padding: '0.75rem 0', caretColor: '#4DC6FF' },
+  '.cm-cursor': { borderLeftColor: '#4DC6FF', borderLeftWidth: '2px' },
+  '.cm-activeLine': { background: 'rgba(77,198,255,0.055)' },
+  '.cm-activeLineGutter': { background: 'rgba(77,198,255,0.055)', color: '#4DC6FF' },
+  '.cm-gutters': {
+    background: '#07101a',
+    borderRight: '1px solid rgba(61,90,128,0.28)',
+    color: '#2d4560',
+    minWidth: '2.8em',
+  },
+  '.cm-lineNumbers .cm-gutterElement': { padding: '0 0.6em 0 0.4em' },
+  '.cm-selectionBackground': { background: 'rgba(77,198,255,0.18) !important' },
+  '&.cm-focused .cm-selectionBackground': { background: 'rgba(77,198,255,0.22) !important' },
+  '.cm-matchingBracket': { color: '#4DC6FF !important', fontWeight: 'bold' },
+  '.cm-error-line': {
+    background: 'rgba(240,128,128,0.1)',
+    borderLeft: '3px solid rgba(240,128,128,0.7)',
+  },
+}, { dark: true });
+
+const cobraHighlight = HighlightStyle.define([
+  { tag: tags.keyword,         color: '#4DC6FF' },
+  { tag: tags.string,          color: '#90d090' },
+  { tag: tags.comment,         color: '#3D5A80', fontStyle: 'italic' },
+  { tag: tags.number,          color: '#ff9870' },
+  { tag: tags.typeName,        color: '#7ecfff' },
+  { tag: tags.className,       color: '#7ecfff' },
+  { tag: tags.definition(tags.variableName), color: '#c9d1d9' },
+  { tag: tags.variableName,    color: '#c9d1d9' },
+  { tag: tags.propertyName,    color: '#a0c8ff' },
+  { tag: tags.function(tags.variableName), color: '#a0c8ff' },
+  { tag: tags.function(tags.propertyName), color: '#a0c8ff' },
+  { tag: tags.operator,        color: '#8dbddd' },
+  { tag: tags.punctuation,     color: '#8dbddd' },
+  { tag: tags.bool,            color: '#4DC6FF' },
+  { tag: tags.null,            color: '#4DC6FF' },
+  { tag: tags.modifier,        color: '#4DC6FF' },
+  { tag: tags.annotation,      color: '#f0c060' },
+]);
+
+// ── Error line decoration ─────────────────────────────────────
+const setErrorLineEffect = StateEffect.define();
+const errorLineField = StateField.define({
+  create: () => Decoration.none,
+  update(deco, tr) {
+    deco = deco.map(tr.changes);
+    for (const e of tr.effects) {
+      if (!e.is(setErrorLineEffect)) continue;
+      if (e.value == null) return Decoration.none;
+      const n = Math.max(1, Math.min(e.value, tr.state.doc.lines));
+      return Decoration.set([
+        Decoration.line({ class: 'cm-error-line' }).range(tr.state.doc.line(n).from),
+      ]);
+    }
+    return deco;
+  },
+  provide: f => EditorView.decorations.from(f),
+});
+
+// ── Helpers ───────────────────────────────────────────────────
 function normalize(s) {
   return String(s ?? '').replace(/\r\n/g, '\n').trim();
 }
@@ -26,21 +103,55 @@ async function runCode(code, stdin = '') {
   };
 }
 
-// ── Tab-key support in textarea ───────────────────────────────
-function handleTab(e, setter) {
-  if (e.key !== 'Tab') return;
-  e.preventDefault();
-  const el = e.target;
-  const start = el.selectionStart;
-  const end = el.selectionEnd;
-  const next = el.value.slice(0, start) + '    ' + el.value.slice(end);
-  setter(next);
-  requestAnimationFrame(() => {
-    el.selectionStart = el.selectionEnd = start + 4;
-  });
+function parseJavaError(stderr) {
+  let m = stderr.match(/Main\.java:(\d+):\s*error:\s*(.+)/);
+  if (m) return { line: parseInt(m[1]), message: m[2].trim() };
+  m = stderr.match(/at\s+\S+\.main\(Main\.java:(\d+)\)/);
+  const lineNum = m ? parseInt(m[1]) : null;
+  const raw = stderr.split('\n')[0]
+    .replace(/^Exception in thread "[^"]*"\s*/, '')
+    .replace(/^(java\.lang\.|java\.util\.|java\.io\.)/, '')
+    .trim();
+  return { line: lineNum, message: raw || 'Runtime error' };
 }
 
-// ── Single test result row ────────────────────────────────────
+// LCS character-level diff
+function charDiff(expected, actual) {
+  const m = expected.length, n = actual.length;
+  const dp = Array.from({ length: m + 1 }, () => new Int32Array(n + 1));
+  for (let i = 1; i <= m; i++)
+    for (let j = 1; j <= n; j++)
+      dp[i][j] = expected[i-1] === actual[j-1]
+        ? dp[i-1][j-1] + 1
+        : Math.max(dp[i-1][j], dp[i][j-1]);
+  const out = [];
+  let i = m, j = n;
+  while (i > 0 || j > 0) {
+    if (i > 0 && j > 0 && expected[i-1] === actual[j-1]) {
+      out.unshift({ text: actual[j-1], t: 'ok' }); i--; j--;
+    } else if (j > 0 && (i === 0 || dp[i][j-1] >= dp[i-1][j])) {
+      out.unshift({ text: actual[j-1], t: 'add' }); j--;
+    } else {
+      out.unshift({ text: expected[i-1], t: 'del' }); i--;
+    }
+  }
+  return out;
+}
+
+function DiffView({ expected, actual }) {
+  const chunks = charDiff(expected, actual);
+  return (
+    <span className="ce-diff">
+      {chunks.map((c, i) =>
+        c.t === 'ok'  ? <span key={i} className="ce-dc-ok">{c.text === '\n' ? '↵\n' : c.text}</span> :
+        c.t === 'add' ? <span key={i} className="ce-dc-add">{c.text === '\n' ? '↵\n' : c.text}</span> :
+                        <span key={i} className="ce-dc-del">{c.text === '\n' ? '↵' : c.text}</span>
+      )}
+    </span>
+  );
+}
+
+// ── Test row ──────────────────────────────────────────────────
 function TestRow({ tc, result }) {
   const [open, setOpen] = useState(false);
   const status = result == null ? 'pending'
@@ -53,9 +164,9 @@ function TestRow({ tc, result }) {
       <button className="ce-test-header" onClick={() => setOpen(o => !o)}>
         <span className={`ce-test-dot ce-dot-${status}`} />
         <span className="ce-test-label">{tc.label}</span>
-        {status === 'pass' && <span className="ce-test-verdict">Passed</span>}
-        {status === 'fail' && <span className="ce-test-verdict ce-fail">Wrong answer</span>}
-        {status === 'error' && <span className="ce-test-verdict ce-fail">Runtime error</span>}
+        {status === 'pass'    && <span className="ce-test-verdict">Passed</span>}
+        {status === 'fail'    && <span className="ce-test-verdict ce-fail">Wrong answer</span>}
+        {status === 'error'   && <span className="ce-test-verdict ce-fail">Error</span>}
         {status === 'pending' && <span className="ce-test-verdict ce-pending">—</span>}
         <span className={`ce-test-chevron${open ? ' open' : ''}`}>▶</span>
       </button>
@@ -75,11 +186,16 @@ function TestRow({ tc, result }) {
             <div className="ce-detail-row">
               <span className="ce-detail-label">Got</span>
               <pre className={`ce-detail-pre ${result.passed ? 'ce-expected' : 'ce-got-wrong'}`}>
-                {result.error ? result.error : result.actual || '(no output)'}
+                {result.error
+                  ? result.error
+                  : result.passed
+                    ? result.actual || '(no output)'
+                    : <DiffView expected={result.expected} actual={result.actual || ''} />
+                }
               </pre>
             </div>
           )}
-          {result?.stderr && (
+          {result?.stderr && !result.error && (
             <div className="ce-detail-row">
               <span className="ce-detail-label">Stderr</span>
               <pre className="ce-detail-pre ce-stderr">{result.stderr}</pre>
@@ -91,65 +207,133 @@ function TestRow({ tc, result }) {
   );
 }
 
-// ── Main CodeEditor component ─────────────────────────────────
+// ── Main component ────────────────────────────────────────────
 export default function CodeEditor({ starterCode = '', testCases = [], hint = '' }) {
-  const [code, setCode] = useState(starterCode);
-  const [results, setResults] = useState([]);
-  const [running, setRunning] = useState(false);
-  const [runError, setRunError] = useState('');
-  const textareaRef = useRef(null);
+  const containerRef = useRef(null);
+  const viewRef      = useRef(null);
+  const codeRef      = useRef(starterCode);
+  const runFnRef     = useRef(null);
 
-  const allPassed = results.length > 0 && results.every(r => r?.passed);
-  const anyRun    = results.length > 0;
+  const [results,  setResults]  = useState([]);
+  const [running,  setRunning]  = useState(false);
+  const [runError, setRunError] = useState('');
+  const [execMs,   setExecMs]   = useState(null);
+  const [errBanner, setErrBanner] = useState('');
+
+  // Build the editor once on mount
+  useEffect(() => {
+    const view = new EditorView({
+      state: EditorState.create({
+        doc: starterCode,
+        extensions: [
+          minimalSetup,
+          lineNumbers(),
+          highlightActiveLineGutter(),
+          highlightActiveLine(),
+          history(),
+          indentOnInput(),
+          bracketMatching(),
+          closeBrackets(),
+          java(),
+          keymap.of([
+            indentWithTab,
+            ...defaultKeymap,
+            ...historyKeymap,
+            { key: 'Ctrl-Enter', mac: 'Cmd-Enter', run() { runFnRef.current?.(); return true; } },
+          ]),
+          cobraTheme,
+          syntaxHighlighting(cobraHighlight),
+          errorLineField,
+          EditorView.updateListener.of(u => {
+            if (u.docChanged) codeRef.current = u.state.doc.toString();
+          }),
+        ],
+      }),
+      parent: containerRef.current,
+    });
+    viewRef.current = view;
+    return () => view.destroy();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const clearErrorLine = useCallback(() => {
+    viewRef.current?.dispatch({ effects: setErrorLineEffect.of(null) });
+    setErrBanner('');
+  }, []);
+
+  const highlightErrorLine = useCallback((line) => {
+    if (line == null || !viewRef.current) return;
+    viewRef.current.dispatch({ effects: setErrorLineEffect.of(line) });
+    // Scroll to error line
+    const doc = viewRef.current.state.doc;
+    const n = Math.max(1, Math.min(line, doc.lines));
+    viewRef.current.dispatch({
+      selection: { anchor: doc.line(n).from },
+      scrollIntoView: true,
+    });
+  }, []);
 
   const runAll = useCallback(async () => {
+    const code = codeRef.current;
+    clearErrorLine();
     setRunning(true);
     setRunError('');
     setResults(testCases.map(() => null));
+    setExecMs(null);
 
+    const t0 = performance.now();
     const next = [];
+
     for (let i = 0; i < testCases.length; i++) {
       const tc = testCases[i];
       try {
         const { stdout, stderr, code: exitCode } = await runCode(code, tc.input ?? '');
+
         if (exitCode !== 0 && !stdout) {
-          next.push({ passed: false, error: stderr || `Exit code ${exitCode}`, stderr, actual: '' });
+          const { line, message } = parseJavaError(stderr);
+          if (line) highlightErrorLine(line);
+          setErrBanner(message);
+          next.push({ passed: false, error: message, stderr, actual: '' });
         } else {
-          const actual = normalize(stdout);
+          const actual   = normalize(stdout);
           const expected = normalize(tc.expected);
           next.push({ passed: actual === expected, actual, expected, stderr });
         }
       } catch (err) {
         next.push({ passed: false, error: err.message, stderr: '', actual: '' });
-        setRunError('Could not reach code execution server. Check your internet connection.');
+        setRunError('Could not reach code execution server. Check your connection.');
       }
       setResults([...next, ...testCases.slice(i + 1).map(() => null)]);
     }
-    setRunning(false);
-  }, [code, testCases]);
 
-  const passCount = results.filter(r => r?.passed).length;
+    setExecMs(Math.round(performance.now() - t0));
+    setRunning(false);
+  }, [testCases, clearErrorLine, highlightErrorLine]);
+
+  // Keep runFnRef in sync so Ctrl+Enter always calls latest version
+  runFnRef.current = runAll;
+
+  const allPassed  = results.length > 0 && results.every(r => r?.passed);
+  const anyRun     = results.length > 0;
+  const passCount  = results.filter(r => r?.passed).length;
 
   return (
     <div className="ce-root">
-      <div className="ce-editor-header">
+      <div className="ce-head">
         <span className="ce-label">Code Editor</span>
         <span className="ce-lang">Java</span>
+        <span className="ce-shortcut">Ctrl+Enter to run</span>
       </div>
 
-      <div className="ce-editor-area">
-        <textarea
-          ref={textareaRef}
-          className="ce-textarea"
-          value={code}
-          onChange={e => setCode(e.target.value)}
-          onKeyDown={e => handleTab(e, setCode)}
-          spellCheck={false}
-          autoComplete="off"
-          autoCorrect="off"
-          autoCapitalize="off"
-        />
-      </div>
+      {errBanner && (
+        <div className="ce-err-banner">
+          <span className="ce-err-icon">!</span>
+          {errBanner}
+          <button className="ce-err-close" onClick={clearErrorLine}>✕</button>
+        </div>
+      )}
+
+      <div className="ce-editor-wrap" ref={containerRef} />
 
       <div className="ce-run-bar">
         <button
@@ -164,9 +348,10 @@ export default function CodeEditor({ starterCode = '', testCases = [], hint = ''
             {passCount} / {testCases.length} passed
           </span>
         )}
-        {allPassed && (
-          <span className="ce-confetti">🎉 All tests passing!</span>
+        {execMs != null && !running && (
+          <span className="ce-exec-time">{execMs} ms</span>
         )}
+        {allPassed && <span className="ce-confetti">All tests passing!</span>}
       </div>
 
       {runError && <p className="ce-run-error">{runError}</p>}
