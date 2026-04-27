@@ -1,18 +1,39 @@
 ---
 import type { CollectionEntry } from 'astro:content';
-type Props = { lesson: CollectionEntry<'lessons'> };
-const { lesson } = Astro.props;
+import '../styles/global.css';
+
+type Props = {
+  lesson: CollectionEntry<'lessons'>;
+  allLessons: CollectionEntry<'lessons'>[];
+  prev: CollectionEntry<'lessons'> | null;
+  next: CollectionEntry<'lessons'> | null;
+};
+
+const { lesson, allLessons, prev, next } = Astro.props;
 const { data } = lesson;
-const trackLabel = {
-  summer: 'Summer · Foundations',
-  fall: 'Fall · Implementation',
-  'supplemental-s1': 'Supplemental · Swerve',
-  'supplemental-s2': 'Supplemental · Vision',
-  'supplemental-s3': 'Supplemental · Auto',
-  'supplemental-s4': 'Supplemental · Advanced Control',
-  'supplemental-s5': 'Supplemental · Tooling',
-}[data.track];
+
+const TRACKS = [
+  { id: 'summer',          label: 'Foundations',      group: 'Summer' },
+  { id: 'fall',            label: 'Implementation',   group: 'Fall' },
+  { id: 'supplemental-s1', label: 'Swerve Drive',     group: 'Supplemental' },
+  { id: 'supplemental-s2', label: 'Vision & Pose',    group: 'Supplemental' },
+  { id: 'supplemental-s3', label: 'Auto Routines',    group: 'Supplemental' },
+  { id: 'supplemental-s4', label: 'Advanced Control', group: 'Supplemental' },
+  { id: 'supplemental-s5', label: 'Tooling',          group: 'Supplemental' },
+];
+
+function lessonUrl(l: CollectionEntry<'lessons'>) {
+  const [track, slug] = l.slug.split('/');
+  return `/lessons/${track}/${slug}`;
+}
+
+const byTrack = Object.fromEntries(
+  TRACKS.map(t => [t.id, allLessons.filter(l => l.data.track === t.id)])
+);
+
+const currentTrack = TRACKS.find(t => t.id === data.track)!;
 ---
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -21,26 +42,438 @@ const trackLabel = {
   <title>{data.title} — Control Lab</title>
 </head>
 <body>
-  <header class="lesson-header">
-    <div class="eyebrow">{trackLabel} · Lesson {String(data.lesson).padStart(2, '0')}</div>
-    <h1>{data.title}</h1>
-    <div class="meta">
-      <span>⏱ {data.duration}</span>
-      {data.prereqs.length > 0 && <span>Prereqs: {data.prereqs.join(', ')}</span>}
-      <span>Contributed by {data.contributedBy}</span>
-    </div>
-    <details class="objectives">
-      <summary>By the end of this lesson you will be able to…</summary>
-      <ul>{data.objectives.map(o => <li>{o}</li>)}</ul>
-    </details>
-  </header>
 
-  <main class="lesson-body">
-    <slot />
+  <aside class="sidebar">
+    <div class="sidebar-inner">
+
+      <a href="/" class="logo">
+        <span class="logo-badge">498</span>
+        <div class="logo-text">
+          <span class="logo-name">Control Lab</span>
+          <span class="logo-sub">FRC Programming</span>
+        </div>
+      </a>
+
+      <nav class="nav-tracks">
+        {TRACKS.map(track => {
+          const lessons = byTrack[track.id];
+          if (!lessons || lessons.length === 0) return null;
+          const isCurrentTrack = track.id === data.track;
+          return (
+            <div class={`track-group${isCurrentTrack ? ' is-open' : ''}`}>
+              <div class="track-label">
+                <span class="track-group-name">{track.group}</span>
+                <span class="track-sub-name">{track.label}</span>
+              </div>
+              <ul class="lesson-list">
+                {lessons.map(l => {
+                  const active = l.slug === lesson.slug;
+                  return (
+                    <li>
+                      <a href={lessonUrl(l)} class={`lesson-item${active ? ' is-active' : ''}`}>
+                        <span class="lesson-num">{String(l.data.lesson).padStart(2, '0')}</span>
+                        <span class="lesson-name">{l.data.title}</span>
+                      </a>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          );
+        })}
+      </nav>
+
+    </div>
+  </aside>
+
+  <main class="main">
+    <div class="lesson-wrap">
+
+      <header class="lesson-head">
+        <p class="breadcrumb">
+          {currentTrack.group} · {currentTrack.label} · Lesson {String(data.lesson).padStart(2, '0')}
+        </p>
+        <h1>{data.title}</h1>
+        <div class="meta-row">
+          <span class="badge">{data.duration}</span>
+          {data.prereqs.length > 0 && (
+            <span class="badge badge-muted">Prereqs: {data.prereqs.join(', ')}</span>
+          )}
+          <span class="badge badge-muted">{data.contributedBy}</span>
+        </div>
+        {data.objectives.length > 0 && (
+          <details class="objectives">
+            <summary>Learning objectives</summary>
+            <ul>
+              {data.objectives.map(o => <li>{o}</li>)}
+            </ul>
+          </details>
+        )}
+      </header>
+
+      <div class="lesson-body">
+        <slot />
+      </div>
+
+      <footer class="lesson-foot">
+        <div class="nav-pair">
+          {prev ? (
+            <a href={lessonUrl(prev)} class="nav-card">
+              <span class="nav-dir">← Previous</span>
+              <span class="nav-title">{prev.data.title}</span>
+            </a>
+          ) : <span />}
+          {next ? (
+            <a href={lessonUrl(next)} class="nav-card nav-card-next">
+              <span class="nav-dir">Next →</span>
+              <span class="nav-title">{next.data.title}</span>
+            </a>
+          ) : <span />}
+        </div>
+      </footer>
+
+    </div>
   </main>
 
-  <footer class="lesson-footer">
-    <a href="/">← Back to all lessons</a>
-  </footer>
 </body>
 </html>
+
+<style is:global>
+
+/* ── Sidebar ─────────────────────────────────── */
+
+.sidebar {
+  position: fixed;
+  inset: 0 auto 0 0;
+  width: var(--sidebar-w);
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+}
+
+.sidebar-inner {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  padding-bottom: 2rem;
+}
+
+.logo {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 1rem 1.125rem;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.logo:hover .logo-name { color: var(--accent); }
+.logo-badge {
+  background: var(--accent);
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  padding: 0.25em 0.55em;
+  border-radius: 5px;
+  flex-shrink: 0;
+}
+.logo-text { display: flex; flex-direction: column; line-height: 1.2; }
+.logo-name {
+  font-size: 0.875rem;
+  font-weight: 700;
+  color: var(--text);
+  transition: color 0.15s;
+}
+.logo-sub {
+  font-size: 0.68rem;
+  color: var(--text-subtle);
+  margin-top: 0.1rem;
+}
+
+.nav-tracks { padding: 0.75rem 0; }
+
+.track-group { margin-bottom: 0.5rem; }
+
+.track-label {
+  display: flex;
+  flex-direction: column;
+  padding: 0.375rem 1.125rem 0.25rem;
+}
+.track-group-name {
+  font-size: 0.6rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--text-subtle);
+}
+.track-sub-name {
+  font-size: 0.73rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-top: 0.1rem;
+}
+
+.lesson-list { list-style: none; }
+
+.lesson-item {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding: 0.3rem 1.125rem;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  border-left: 2px solid transparent;
+  transition: background 0.1s, color 0.1s, border-color 0.1s;
+  line-height: 1.4;
+}
+.lesson-item:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+.lesson-item.is-active {
+  background: var(--accent-dim);
+  color: var(--accent);
+  border-left-color: var(--accent);
+  font-weight: 500;
+}
+.lesson-num {
+  font-size: 0.68rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-subtle);
+  min-width: 1.4rem;
+  flex-shrink: 0;
+}
+.lesson-item.is-active .lesson-num { color: var(--accent); opacity: 0.65; }
+.lesson-name { line-height: 1.4; }
+
+/* ── Main layout ─────────────────────────────── */
+
+.main {
+  margin-left: var(--sidebar-w);
+  min-height: 100vh;
+  display: flex;
+  justify-content: center;
+}
+
+.lesson-wrap {
+  width: 100%;
+  max-width: var(--content-w);
+  padding: 3rem 2.5rem 6rem;
+}
+
+/* ── Lesson header ───────────────────────────── */
+
+.lesson-head { margin-bottom: 2.5rem; }
+
+.breadcrumb {
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--accent);
+  margin-bottom: 0.6rem;
+  opacity: 0.85;
+}
+
+.lesson-head h1 {
+  font-size: 2rem;
+  font-weight: 700;
+  letter-spacing: -0.025em;
+  color: var(--text);
+  line-height: 1.2;
+  margin-bottom: 1rem;
+}
+
+.meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 1.25rem;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.2em 0.65em;
+  border-radius: 5px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  background: var(--accent-dim);
+  color: var(--accent);
+  border: 1px solid rgba(249,115,22,0.25);
+}
+.badge-muted {
+  background: var(--surface-2);
+  color: var(--text-muted);
+  border-color: var(--border);
+}
+
+.objectives {
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  background: var(--surface);
+  overflow: hidden;
+}
+.objectives summary {
+  padding: 0.6rem 1rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.objectives summary::before {
+  content: '▶';
+  font-size: 0.55rem;
+  color: var(--text-subtle);
+  transition: transform 0.15s;
+}
+.objectives[open] summary::before { transform: rotate(90deg); }
+.objectives ul {
+  padding: 0.25rem 1rem 0.875rem 2.25rem;
+  list-style: disc;
+}
+.objectives li {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  padding: 0.175rem 0;
+  line-height: 1.5;
+}
+
+/* ── Prose / lesson body ─────────────────────── */
+
+.lesson-body > * + * { margin-top: 1.25rem; }
+
+.lesson-body h2 {
+  font-size: 1.3rem;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+  color: var(--text);
+  padding-top: 2.5rem;
+  margin-top: 2.5rem !important;
+  padding-bottom: 0.625rem;
+  border-bottom: 1px solid var(--border);
+}
+.lesson-body h2:first-child {
+  padding-top: 0;
+  margin-top: 0 !important;
+}
+
+.lesson-body h3 {
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--text);
+  margin-top: 2rem !important;
+}
+
+.lesson-body h4 {
+  font-size: 0.9rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  margin-top: 1.5rem !important;
+}
+
+.lesson-body p { color: #c9d1d9; line-height: 1.8; }
+
+.lesson-body strong { color: var(--text); font-weight: 600; }
+.lesson-body em { color: var(--text-muted); font-style: italic; }
+
+.lesson-body a { color: var(--accent); }
+.lesson-body a:hover { text-decoration: underline; }
+
+.lesson-body ul,
+.lesson-body ol {
+  padding-left: 1.625rem;
+  color: #c9d1d9;
+}
+.lesson-body li { padding: 0.175rem 0; line-height: 1.75; }
+.lesson-body li + li { margin-top: 0.1rem; }
+
+.lesson-body blockquote {
+  border-left: 3px solid var(--accent);
+  padding: 0.75rem 1.25rem;
+  background: var(--accent-dim);
+  border-radius: 0 var(--r) var(--r) 0;
+}
+.lesson-body blockquote p {
+  color: var(--text-muted);
+  font-style: italic;
+  margin: 0;
+}
+
+/* Shiki handles syntax colors; we handle container */
+.lesson-body pre {
+  border-radius: var(--r);
+  padding: 1.125rem 1.375rem;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  margin: 1.75rem 0;
+  font-size: 0.865rem;
+  line-height: 1.65;
+}
+
+.lesson-body code:not(pre > code) {
+  font-family: ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, Consolas, monospace;
+  font-size: 0.84em;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.15em 0.4em;
+  color: #ffa657;
+}
+
+/* ── Prev / next nav ─────────────────────────── */
+
+.lesson-foot {
+  margin-top: 4rem;
+  padding-top: 2rem;
+  border-top: 1px solid var(--border);
+}
+
+.nav-pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.875rem;
+}
+
+.nav-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  padding: 1rem 1.25rem;
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  background: var(--surface);
+  transition: border-color 0.15s, background 0.15s;
+}
+.nav-card:hover {
+  border-color: var(--accent);
+  background: var(--surface-2);
+}
+.nav-card-next { text-align: right; }
+
+.nav-dir {
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-subtle);
+}
+.nav-card:hover .nav-dir { color: var(--accent); }
+.nav-title {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--text);
+  line-height: 1.4;
+}
+
+</style>

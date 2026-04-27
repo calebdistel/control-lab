@@ -2,17 +2,39 @@
 import { getCollection } from 'astro:content';
 import LessonLayout from '../../../layouts/LessonLayout.astro';
 
+const TRACK_ORDER = [
+  'summer', 'fall',
+  'supplemental-s1', 'supplemental-s2', 'supplemental-s3',
+  'supplemental-s4', 'supplemental-s5',
+];
+
 export async function getStaticPaths() {
-  const lessons = await getCollection('lessons');
-  return lessons.map(lesson => {
+  const allRaw = await getCollection('lessons', ({ data }) => !data.draft);
+
+  const sorted = [...allRaw].sort((a, b) => {
+    const ti = TRACK_ORDER.indexOf(a.data.track);
+    const tj = TRACK_ORDER.indexOf(b.data.track);
+    if (ti !== tj) return ti - tj;
+    return a.data.lesson - b.data.lesson;
+  });
+
+  return sorted.map((lesson, i) => {
     const [track, slug] = lesson.slug.split('/');
-    return { params: { track, slug }, props: { lesson } };
+    return {
+      params: { track, slug },
+      props: {
+        lesson,
+        allLessons: sorted,
+        prev: i > 0 ? sorted[i - 1] : null,
+        next: i < sorted.length - 1 ? sorted[i + 1] : null,
+      },
+    };
   });
 }
 
-const { lesson } = Astro.props;
+const { lesson, allLessons, prev, next } = Astro.props;
 const { Content } = await lesson.render();
 ---
-<LessonLayout lesson={lesson}>
+<LessonLayout lesson={lesson} allLessons={allLessons} prev={prev} next={next}>
   <Content />
 </LessonLayout>
