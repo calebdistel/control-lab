@@ -2,17 +2,17 @@
 import { getCollection } from 'astro:content';
 import LessonLayout from '../../../layouts/LessonLayout.astro';
 
-const TRACK_ORDER = [
-  'fundamentals',
-  'robot-code',
-  'motion-control',
-  'sensing-vision',
-  'autonomy',
-  'swerve',
-  'tooling',
-];
-
 export async function getStaticPaths() {
+  const TRACK_ORDER = [
+    'fundamentals',
+    'robot-code',
+    'motion-control',
+    'sensing-vision',
+    'autonomy',
+    'swerve',
+    'tooling',
+  ];
+
   const allRaw = await getCollection('lessons', ({ data }) => !data.draft);
 
   const sorted = [...allRaw].sort((a, b) => {

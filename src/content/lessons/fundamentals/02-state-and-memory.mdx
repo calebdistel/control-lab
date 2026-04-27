@@ -1,0 +1,139 @@
+---
+track: fundamentals
+lesson: 2
+title: State and memory
+prereqs: [fundamentals-01]
+objectives:
+  - Explain the difference between local and persistent state
+  - Predict a variable's value after multiple loop iterations
+  - Decide where to declare a variable based on how long it needs to survive
+---
+
+import Key from '../../../components/Key.astro';
+import Try from '../../../components/Try.astro';
+import Note from '../../../components/Note.astro';
+import Warn from '../../../components/Warn.astro';
+import CodeTrace from '../../../components/demos/CodeTrace.jsx';
+import Quiz from '../../../components/demos/Quiz.jsx';
+
+## Hook
+
+You write code to count how many game pieces the robot has collected. You test it. The robot grabs ten pieces. Every log line says `Collected: 1`. It never gets past 1.
+
+```java
+void periodic() {
+    int count = 0;
+    if (sensor.hasGamePiece()) {
+        count = count + 1;
+        System.out.println("Collected: " + count);
+    }
+}
+```
+
+`periodic()` runs 50 times per second. Each call recreates `count` from scratch. The robot has no memory of what happened 20 milliseconds ago.
+
+## Core concept
+
+<Key>
+Where you declare a variable determines how long it lives. Variables inside a method are created fresh every call. Variables declared as class fields persist for the life of the object.
+</Key>
+
+## Walk-through
+
+The fix: declare `count` outside `periodic()`, as a field on the class.
+
+```java
+int count = 0;          // field — lives on the object
+
+void periodic() {
+    if (sensor.hasGamePiece()) {
+        count = count + 1;
+        System.out.println("Collected: " + count);
+    }
+}
+```
+
+Now `count` is created once and survives every call to `periodic()`.
+
+This is the first design decision you make about every variable: *how long does this value need to live?*
+
+| Situation | Declare as |
+|-----------|------------|
+| Only needed inside one method call | Local variable |
+| Needs to survive between loop calls | Class field |
+| Needs to survive across subsystem resets | Static field or external state |
+
+<Note>
+In WPILib, your Subsystem class is instantiated once at startup. Fields on a Subsystem live for the entire match.
+</Note>
+
+Step through the **broken** version first — `count` is declared inside the loop:
+
+## Interactive demo
+
+<CodeTrace
+  client:load
+  variables={{ call: 1, count: "?" }}
+  steps={[
+    { code: "int count = 0",             state: { call: 1, count: 0 }, comment: "created fresh" },
+    { code: "sensor true → count += 1",  state: { call: 1, count: 1 }, comment: "piece detected" },
+    { code: "─── next periodic() call ───", state: { call: 2, count: "?" }, comment: "call ends" },
+    { code: "int count = 0",             state: { call: 2, count: 0 }, comment: "wiped out!" },
+    { code: "sensor true → count += 1",  state: { call: 2, count: 1 }, comment: "stuck at 1" },
+  ]}
+/>
+
+Now the **fixed** version — `count` is a field, declared once:
+
+<CodeTrace
+  client:load
+  variables={{ call: 1, count: 0 }}
+  steps={[
+    { code: "sensor true → count += 1",     state: { call: 1, count: 1 }, comment: "persists" },
+    { code: "─── next periodic() call ───",  state: { call: 2, count: 1 }, comment: "survives!" },
+    { code: "sensor true → count += 1",     state: { call: 2, count: 2 }, comment: "now 2" },
+    { code: "─── next periodic() call ───",  state: { call: 3, count: 2 }, comment: "survives!" },
+    { code: "sensor true → count += 1",     state: { call: 3, count: 3 }, comment: "now 3" },
+  ]}
+/>
+
+## Try it yourself
+
+<Try>
+A subsystem has a field `speed = 0.5` and a local variable `boost`. Trace three consecutive calls to `periodic()`, each with `turboHeld = true`.
+
+```java
+double speed = 0.5;  // field
+
+void periodic() {
+    double boost = 0.0;
+    if (turboHeld) boost = boost + 0.2;
+    speed = speed + boost;
+}
+```
+</Try>
+
+<Quiz
+  client:load
+  question="After 3 calls to periodic() with turboHeld = true, what is speed?"
+  type="number"
+  correct={1.1}
+  explanation="boost resets to 0.0 each call, then adds 0.2 → always 0.2. speed accumulates: 0.5 + 0.2 + 0.2 + 0.2 = 1.1."
+/>
+
+## Key takeaways
+
+- Local variables are created fresh every time a method is called.
+- Class fields persist for the life of the object — across every `periodic()` call.
+- Most robot state (positions, counts, modes) belongs in fields.
+- Before declaring a variable, ask: does this value need to outlive this function call?
+
+## Common confusions
+
+**"Why not just make everything a field?"** Local variables communicate intent — "this only matters right now." Overusing fields makes it harder to reason about what the robot is remembering and when.
+
+**"My field keeps resetting when I redeploy."** Redeploying reboots the robot. Fields reset on startup. If you need something to survive a reboot, it has to be written to disk or read from a sensor.
+
+## What's next
+
+In **Lesson 03**, we'll look at conditionals — the if/else structures that let a program make decisions based on sensor values and produce different behavior in different situations.

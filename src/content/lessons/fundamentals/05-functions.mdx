@@ -1,0 +1,133 @@
+---
+track: fundamentals
+lesson: 5
+title: Functions
+prereqs: [fundamentals-04]
+objectives:
+  - Call a function and correctly predict its return value given specific arguments
+  - Explain the difference between parameters and arguments
+  - Identify when to extract logic into a function versus leaving it inline
+---
+
+import Key from '../../../components/Key.astro';
+import Try from '../../../components/Try.astro';
+import Note from '../../../components/Note.astro';
+import CodeTrace from '../../../components/demos/CodeTrace.jsx';
+import Quiz from '../../../components/demos/Quiz.jsx';
+
+## Hook
+
+You write code to limit motor output to a safe range. It works, so you copy it into the arm subsystem, then the shooter subsystem, then the climber subsystem:
+
+```java
+// In arm:
+if (power > 1.0)  power = 1.0;
+if (power < -1.0) power = -1.0;
+armMotor.set(power);
+
+// In shooter — copied:
+if (power > 1.0)  power = 1.0;
+if (power < -1.0) power = -1.0;
+shooterMotor.set(power);
+```
+
+A week later you realize the safe range should be ±0.8, not ±1.0. You update the arm. You forget the shooter. At your first competition, the shooter overdrive trips a breaker.
+
+The fix is a function: write the logic once, call it everywhere.
+
+## Core concept
+
+<Key>
+A function is a named, reusable block of code. You define it once. You call it by name from anywhere. Fix it once — fixed everywhere.
+</Key>
+
+## Walk-through
+
+In Java, a function is called a *method*. Here's how to define and call one:
+
+```java
+// Definition: named "clamp", takes three doubles, returns a double
+double clamp(double value, double min, double max) {
+    if (value < min) return min;
+    if (value > max) return max;
+    return value;
+}
+
+// Calling it:
+double safe = clamp(power, -0.8, 0.8);
+armMotor.set(safe);
+```
+
+**Vocabulary:**
+- **Parameter** — a named input slot in the definition (`value`, `min`, `max`).
+- **Argument** — the actual value passed when calling (`power`, `-0.8`, `0.8`).
+- **Return value** — what the function hands back to the caller.
+
+The caller doesn't know or care *how* `clamp` works — only that it takes a value and two bounds and returns a bounded value. That's the contract.
+
+<Note>
+`void` methods don't return a value. `setMotor(double power)` sets a motor and returns nothing. Methods that compute something (like `clamp`) should return a result instead of modifying a field — it makes them easier to test and reuse.
+</Note>
+
+## Interactive demo
+
+Trace a call to `clamp(1.4, -0.8, 0.8)` step by step:
+
+<CodeTrace
+  client:load
+  variables={{ value: 1.4, min: -0.8, max: 0.8, result: "?" }}
+  steps={[
+    { code: "clamp(1.4, -0.8, 0.8)",       state: { value: 1.4, min: -0.8, max: 0.8, result: "?" },   comment: "call begins" },
+    { code: "if value < min? (1.4 < -0.8)", state: { value: 1.4, min: -0.8, max: 0.8, result: "?" },   comment: "false" },
+    { code: "if value > max? (1.4 > 0.8)",  state: { value: 1.4, min: -0.8, max: 0.8, result: "?" },   comment: "true!" },
+    { code: "return max",                   state: { value: 1.4, min: -0.8, max: 0.8, result: "?" },   comment: "returns 0.8" },
+    { code: "result = 0.8",                 state: { value: 1.4, min: -0.8, max: 0.8, result: 0.8 },   comment: "caller receives" },
+  ]}
+/>
+
+## Try it yourself
+
+<Try>
+Predict the return value of each `clamp` call without tracing step by step.
+
+```java
+double clamp(double value, double min, double max) {
+    if (value < min) return min;
+    if (value > max) return max;
+    return value;
+}
+```
+</Try>
+
+<Quiz
+  client:load
+  question="What does clamp(-0.3, -0.8, 0.8) return?"
+  type="number"
+  correct={-0.3}
+  explanation="-0.3 is within [-0.8, 0.8]. Neither condition is true, so the function returns value as-is: -0.3."
+/>
+
+<Quiz
+  client:load
+  question="What does clamp(-1.2, 0.0, 1.0) return?"
+  type="number"
+  correct={0}
+  explanation="-1.2 < 0.0 is true, so the function returns min immediately: 0.0."
+/>
+
+## Key takeaways
+
+- A function defines a contract: given these inputs, produce this output.
+- Parameters are named slots in the definition. Arguments are the values you pass when calling.
+- `return` immediately exits the function and hands a value back to the caller.
+- Extract logic into a function when the same code appears more than once, or when a block is complex enough that naming it makes the caller easier to read.
+
+## Common confusions
+
+**"I changed the parameter inside the function — why didn't the caller's variable change?"** Java passes primitives (int, double, boolean) *by value* — the function gets a copy. Changing `value` inside `clamp` doesn't affect whatever variable the caller passed in.
+
+**"My function compiles but returns the wrong thing."** Add a `System.out.println` right before each `return` to see which one is actually executing. Trace it like the CodeTrace above.
+
+## What's next
+
+In **Lesson 06**, we'll look at debugging — systematic strategies for finding out what your program is actually doing versus what you think it's doing.

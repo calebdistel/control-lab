@@ -1,0 +1,160 @@
+---
+track: fundamentals
+lesson: 6
+title: Debugging
+prereqs: [fundamentals-05]
+objectives:
+  - Apply a systematic process to isolate a bug
+  - Use print statements and AdvantageScope to observe program state at runtime
+  - Distinguish between a logic error, a sensor error, and a hardware error
+---
+
+import Key from '../../../components/Key.astro';
+import Try from '../../../components/Try.astro';
+import Note from '../../../components/Note.astro';
+import Warn from '../../../components/Warn.astro';
+import CodeTrace from '../../../components/demos/CodeTrace.jsx';
+import Quiz from '../../../components/demos/Quiz.jsx';
+
+## Hook
+
+The arm won't go to 90°. It stops at around 60° every time.
+
+You check the code. The logic looks right. You check the wiring. The motor is spinning. You check the sensor — and there it is. Someone plugged the encoder into port 2 instead of port 1. The robot is reading the wrong sensor.
+
+Half the bugs in robot code aren't in the code at all — they're in the gap between what the code assumes and what the hardware is actually doing. Debugging is the skill of closing that gap systematically.
+
+## Core concept
+
+<Key>
+Debugging is not guessing. It's forming a hypothesis about where the fault is, then gathering evidence to confirm or rule it out — starting from the symptom and working backward to the cause.
+</Key>
+
+## Walk-through
+
+**The debugging process:**
+
+1. **Describe the symptom precisely.** "It doesn't work" is not a bug report. "The arm stops at 60° when commanded to 90°, and the motor stops receiving power" is.
+
+2. **Form a hypothesis.** What could cause that symptom? List two or three candidates.
+
+3. **Gather evidence.** Log the relevant values. Don't change code yet.
+
+4. **Rule out hypotheses one at a time.** Start with the most likely or easiest to verify.
+
+5. **Fix, verify, and commit.** Don't "fix" multiple things at once — you won't know which one worked.
+
+**Tool 1: `System.out.println`**
+
+The fastest way to see what a variable actually contains at runtime:
+
+```java
+void periodic() {
+    double target = 90.0;
+    double current = encoder.getAngle();
+    double error = target - current;
+    System.out.println("target=" + target + " current=" + current + " error=" + error);
+    // …
+}
+```
+
+Run the robot and watch the Driver Station console. If `current` is stuck at 60.0 while the arm is clearly moving, the encoder is wrong. If `error` is always positive but the motor doesn't run, check the motor output logic.
+
+**Tool 2: AdvantageScope**
+
+`SmartDashboard` and `Shuffleboard` push values to the network you can watch in real time. AdvantageScope gives you graphs, timelines, and replays.
+
+```java
+SmartDashboard.putNumber("Arm/current", encoder.getAngle());
+SmartDashboard.putNumber("Arm/target",  targetAngle);
+SmartDashboard.putNumber("Arm/error",   error);
+SmartDashboard.putBoolean("Arm/atTarget", Math.abs(error) < 2.0);
+```
+
+Rule of thumb: log more than you think you need. Storage is cheap; a mystery crash at competition is not.
+
+<Note>
+In WPILib, log with `DataLogManager` or use AdvantageKit for full replay capability. `SmartDashboard` is fine for quick inspection; structured logging survives reboots and can be replayed post-match.
+</Note>
+
+**Classifying bugs:**
+
+| Symptom | Likely cause |
+|---------|-------------|
+| Value is 0 or constant | Sensor not connected or wrong port |
+| Value is inverted (positive when should be negative) | Sensor direction, motor direction, or sign error in code |
+| Value jumps around erratically | Loose wire, EMI, or reading a wrong sensor |
+| Logic runs but produces wrong output | Trace the math — off-by-one, wrong units, wrong variable |
+| Code never reaches a branch | Condition is always false — print the condition variables |
+
+## Interactive demo
+
+A student's arm code has a bug. Trace through and spot it:
+
+<CodeTrace
+  client:load
+  variables={{ target: 90, current: 85, error: 0, motorPower: 0 }}
+  steps={[
+    { code: "error = target - current",    state: { target: 90, current: 85, error: 5,  motorPower: 0 }, comment: "error = 5" },
+    { code: "if error > 0: motor = +0.4",  state: { target: 90, current: 85, error: 5,  motorPower: 0.4 }, comment: "should run up" },
+    { code: "motor.set(motorPower)",        state: { target: 90, current: 85, error: 5,  motorPower: 0.4 }, comment: "motor runs" },
+    { code: "─── next call ───",            state: { target: 90, current: 87, error: 0,  motorPower: 0 },   comment: "sensor updates" },
+    { code: "error = target - current",    state: { target: 90, current: 87, error: 3,  motorPower: 0 }, comment: "error = 3" },
+    { code: "if error > 0: motor = +0.4",  state: { target: 90, current: 87, error: 3,  motorPower: 0.4 }, comment: "runs up again" },
+    { code: "motor.set(motorPower)",        state: { target: 90, current: 87, error: 3,  motorPower: 0.4 }, comment: "moving…" },
+    { code: "─── arm reaches 90 ───",       state: { target: 90, current: 90, error: 0,  motorPower: 0 },   comment: "error = 0" },
+    { code: "if error > 0: motor = +0.4",  state: { target: 90, current: 90, error: 0,  motorPower: 0 },   comment: "0 > 0? false" },
+    { code: "motor.set(motorPower)",        state: { target: 90, current: 90, error: 0,  motorPower: 0 },   comment: "motor stays 0" },
+  ]}
+/>
+
+## Try it yourself
+
+<Try>
+Same code. The arm is at `current = 95` (past the target of 90). What happens?
+
+```java
+error = target - current;  // 90 - 95 = -5
+if (error > 0) motorPower = +0.4;
+motor.set(motorPower);
+```
+</Try>
+
+<Quiz
+  client:load
+  question="When current = 95 and target = 90, what is motorPower set to?"
+  type="number"
+  correct={0}
+  explanation="error = 90 - 95 = -5. The condition (-5 > 0) is false, so motorPower stays 0. The arm is past the target but the motor does nothing — the code only drives up, never down. That's the bug."
+/>
+
+<Quiz
+  client:load
+  question="Which type of bug is this?"
+  options={[
+    "Hardware fault — the sensor is wrong",
+    "Logic error — the code doesn't handle overshoot",
+    "Compile error — the code won't build",
+    "Network error — the motor isn't receiving the command",
+  ]}
+  correct={1}
+  explanation="The hardware and network are fine — the symptom (arm stays above 90°) matches a logic gap: no else branch to drive the motor down when error is negative."
+/>
+
+## Key takeaways
+
+- Debugging is a systematic process: describe, hypothesize, gather evidence, rule out, fix.
+- Print the values you assume are correct. Your assumption is often wrong.
+- Log target, current, and error for every control loop — always.
+- Classify the bug first: is it hardware, wiring, sensor direction, units, or logic?
+- Fix one thing at a time. Changing two things means you don't know which one worked.
+
+## Common confusions
+
+**"I added prints but the console is too fast to read."** Add a counter and only print every 50 cycles: `if (count++ % 50 == 0) System.out.println(...)`. Or use SmartDashboard — it throttles automatically.
+
+**"The bug disappears when I add print statements."** Timing-sensitive bugs (race conditions) can shift when you add logging. This usually means there's a threading issue or a sensor read that takes longer than you think.
+
+## What's next
+
+You've now covered the full foundation: programs, state, decisions, loops, functions, and debugging. **Robot Code Lesson 01** is next — how WPILib structures a robot program and where your code fits into the framework.
