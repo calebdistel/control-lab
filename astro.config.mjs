@@ -3,7 +3,7 @@ import mdx from '@astrojs/mdx';
 import react from '@astrojs/react';
 
 export default defineConfig({
-  site: 'https://controllab.frc498.org',
+  site: 'https://controllab.frc498.com',
   integrations: [mdx(), react()],
   markdown: {
     shikiConfig: {
