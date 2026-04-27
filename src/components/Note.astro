@@ -1,0 +1,32 @@
+---
+interface Props { label?: string; }
+const { label = 'Note' } = Astro.props;
+---
+<div class="callout callout-note">
+  <span class="callout-label">{label}</span>
+  <div class="callout-body"><slot /></div>
+</div>
+
+<style>
+.callout-note {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  border-radius: var(--r);
+  padding: 1rem 1.25rem;
+  margin: 1.75rem 0;
+}
+.callout-label {
+  display: block;
+  font-family: "Audiowide", "Kanit", sans-serif;
+  font-size: 0.65rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--dark-grey);
+  margin-bottom: 0.5rem;
+}
+.callout-body :global(p) {
+  color: var(--light-grey);
+  margin: 0;
+  line-height: 1.7;
+}
+</style>

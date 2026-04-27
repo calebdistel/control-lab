@@ -13,13 +13,13 @@ const { lesson, allLessons, prev, next } = Astro.props;
 const { data } = lesson;
 
 const TRACKS = [
-  { id: 'summer',          label: 'Foundations',      group: 'Summer' },
-  { id: 'fall',            label: 'Implementation',   group: 'Fall' },
-  { id: 'supplemental-s1', label: 'Swerve Drive',     group: 'Supplemental' },
-  { id: 'supplemental-s2', label: 'Vision & Pose',    group: 'Supplemental' },
-  { id: 'supplemental-s3', label: 'Auto Routines',    group: 'Supplemental' },
-  { id: 'supplemental-s4', label: 'Advanced Control', group: 'Supplemental' },
-  { id: 'supplemental-s5', label: 'Tooling',          group: 'Supplemental' },
+  { id: 'fundamentals',   label: 'Fundamentals',     group: 'Core Concepts' },
+  { id: 'robot-code',     label: 'Robot Code',        group: 'Core Concepts' },
+  { id: 'motion-control', label: 'Motion & Control',  group: 'Control Theory' },
+  { id: 'sensing-vision', label: 'Sensing & Vision',  group: 'Control Theory' },
+  { id: 'autonomy',       label: 'Autonomy',          group: 'Advanced' },
+  { id: 'swerve',         label: 'Swerve Drive',      group: 'Advanced' },
+  { id: 'tooling',        label: 'Tooling',           group: 'Workflow' },
 ];
 
 function lessonUrl(l: CollectionEntry<'lessons'>) {
@@ -32,6 +32,9 @@ const byTrack = Object.fromEntries(
 );
 
 const currentTrack = TRACKS.find(t => t.id === data.track)!;
+
+const trackLessons = byTrack[data.track] ?? [];
+const posInTrack = trackLessons.findIndex(l => l.slug === lesson.slug) + 1;
 ---
 
 <!DOCTYPE html>
@@ -43,6 +46,9 @@ const currentTrack = TRACKS.find(t => t.id === data.track)!;
 </head>
 <body class="lesson-page">
 
+  <!-- Scroll progress bar -->
+  <div id="progress-bar" aria-hidden="true"></div>
+
   <header class="top-nav">
     <div class="top-nav-inner">
       <a href="/" class="brand-link">
@@ -53,7 +59,9 @@ const currentTrack = TRACKS.find(t => t.id === data.track)!;
         </div>
       </a>
       <div class="top-nav-meta">
-        <strong>{currentTrack.group}</strong> · {currentTrack.label} · L{String(data.lesson).padStart(2, '0')}
+        <span>{currentTrack.label}</span>
+        <span class="meta-sep">·</span>
+        <span>L{String(data.lesson).padStart(2, '0')} of {trackLessons.length}</span>
       </div>
     </div>
   </header>
@@ -89,7 +97,7 @@ const currentTrack = TRACKS.find(t => t.id === data.track)!;
     </nav>
   </aside>
 
-  <main class="main">
+  <main class="main" data-prev={prev ? lessonUrl(prev) : ''} data-next={next ? lessonUrl(next) : ''}>
     <div class="lesson-wrap">
 
       <header class="lesson-head">
@@ -101,21 +109,30 @@ const currentTrack = TRACKS.find(t => t.id === data.track)!;
           <span>Lesson {String(data.lesson).padStart(2, '0')}</span>
         </p>
         <h1>{data.title}</h1>
-        <div class="meta-row">
-          <span class="badge">{data.duration}</span>
-          {data.prereqs.length > 0 && (
+
+        {data.prereqs.length > 0 && (
+          <div class="meta-row">
             <span class="badge badge-muted">Prereqs: {data.prereqs.join(', ')}</span>
-          )}
-          <span class="badge badge-muted">{data.contributedBy}</span>
-        </div>
-        {data.objectives.length > 0 && (
-          <details class="objectives">
-            <summary>Learning objectives</summary>
-            <ul>
-              {data.objectives.map(o => <li>{o}</li>)}
-            </ul>
-          </details>
+          </div>
         )}
+
+        <div class="objectives-box" data-lesson-slug={lesson.slug}>
+          <div class="obj-header">
+            <span class="obj-title">Objectives</span>
+            <span class="obj-counter" id="obj-counter">0 / {data.objectives.length}</span>
+          </div>
+          <ul class="obj-list">
+            {data.objectives.map((o, i) => (
+              <li class="obj-item">
+                <label class="obj-label">
+                  <input type="checkbox" class="obj-check" data-index={i} />
+                  <span class="obj-checkmark" aria-hidden="true"></span>
+                  <span class="obj-text">{o}</span>
+                </label>
+              </li>
+            ))}
+          </ul>
+        </div>
       </header>
 
       <div class="lesson-body">
@@ -123,19 +140,27 @@ const currentTrack = TRACKS.find(t => t.id === data.track)!;
       </div>
 
       <footer class="lesson-foot">
+        <div class="kbd-hint" aria-hidden="true">
+          <span>← →</span> arrow keys to navigate
+        </div>
         <div class="nav-pair">
           {prev ? (
-            <a href={lessonUrl(prev)} class="nav-card">
+            <a href={lessonUrl(prev)} class="nav-card" data-nav="prev">
               <span class="nav-dir">← Previous</span>
               <span class="nav-title">{prev.data.title}</span>
             </a>
           ) : <span />}
           {next ? (
-            <a href={lessonUrl(next)} class="nav-card nav-card-next">
+            <a href={lessonUrl(next)} class="nav-card nav-card-next" data-nav="next">
               <span class="nav-dir">Next →</span>
               <span class="nav-title">{next.data.title}</span>
             </a>
-          ) : <span />}
+          ) : (
+            <a href="/" class="nav-card nav-card-next">
+              <span class="nav-dir">Done</span>
+              <span class="nav-title">Back to all tracks</span>
+            </a>
+          )}
         </div>
       </footer>
 
@@ -145,10 +170,88 @@ const currentTrack = TRACKS.find(t => t.id === data.track)!;
 </body>
 </html>
 
+<script>
+// ── Reading progress bar ──────────────────────────────
+const bar = document.getElementById('progress-bar');
+if (bar) {
+  const update = () => {
+    const scrolled = window.scrollY;
+    const total = document.documentElement.scrollHeight - window.innerHeight;
+    bar.style.width = total > 0 ? `${(scrolled / total) * 100}%` : '0%';
+  };
+  window.addEventListener('scroll', update, { passive: true });
+  update();
+}
+
+// ── Keyboard navigation ───────────────────────────────
+const main = document.querySelector('main');
+document.addEventListener('keydown', (e) => {
+  if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.key === 'ArrowLeft') {
+    const url = main?.dataset.prev;
+    if (url) window.location.href = url;
+  }
+  if (e.key === 'ArrowRight') {
+    const url = main?.dataset.next;
+    if (url) window.location.href = url;
+  }
+});
+
+// ── Interactive objective checkboxes ─────────────────
+const box = document.querySelector<HTMLElement>('.objectives-box');
+const counter = document.getElementById('obj-counter');
+if (box && counter) {
+  const slug = box.dataset.lessonSlug ?? '';
+  const storageKey = `cl:obj:${slug}`;
+  const checkboxes = Array.from(box.querySelectorAll<HTMLInputElement>('.obj-check'));
+  const total = checkboxes.length;
+
+  const load = () => {
+    try {
+      return new Set<number>(JSON.parse(localStorage.getItem(storageKey) ?? '[]'));
+    } catch { return new Set<number>(); }
+  };
+
+  const save = (checked: Set<number>) => {
+    try { localStorage.setItem(storageKey, JSON.stringify([...checked])); } catch {}
+  };
+
+  const updateCounter = (checked: Set<number>) => {
+    const n = checked.size;
+    counter.textContent = `${n} / ${total}`;
+    counter.classList.toggle('all-done', n === total);
+    box.classList.toggle('is-complete', n === total);
+  };
+
+  const checked = load();
+  checkboxes.forEach((cb, i) => {
+    cb.checked = checked.has(i);
+    cb.addEventListener('change', () => {
+      cb.checked ? checked.add(i) : checked.delete(i);
+      save(checked);
+      updateCounter(checked);
+    });
+  });
+  updateCounter(checked);
+}
+</script>
+
 <style is:global>
 
-/* ── Sidebar ─────────────────────────────────── */
+/* ── Progress bar ────────────────────────────────── */
+#progress-bar {
+  position: fixed;
+  top: 0; left: 0;
+  height: 3px;
+  width: 0%;
+  background: linear-gradient(90deg, var(--accent), var(--accent-hover));
+  z-index: 100;
+  transition: width 80ms linear;
+  pointer-events: none;
+}
 
+/* ── Sidebar ─────────────────────────────────────── */
 .sidebar {
   position: fixed;
   top: var(--nav-h);
@@ -160,22 +263,18 @@ const currentTrack = TRACKS.find(t => t.id === data.track)!;
   overflow-y: auto;
   z-index: 20;
 }
-
-.sidebar-nav {
-  padding: 1.25rem 0 2rem;
-}
-
-.track-group { margin-bottom: 0.75rem; }
+.sidebar-nav { padding: 1.25rem 0 2rem; }
+.track-group { margin-bottom: 0.5rem; }
 
 .track-label {
-  padding: 0.5rem 1.25rem 0.375rem;
+  padding: 0.625rem 1.25rem 0.375rem;
   display: flex;
   flex-direction: column;
 }
 .track-group-name {
   font-family: "Audiowide", "Kanit", sans-serif;
-  font-size: 0.65rem;
-  letter-spacing: 0.15em;
+  font-size: 0.6rem;
+  letter-spacing: 0.16em;
   text-transform: uppercase;
   color: var(--dark-grey);
 }
@@ -185,29 +284,23 @@ const currentTrack = TRACKS.find(t => t.id === data.track)!;
   font-size: 0.78rem;
   font-weight: 600;
   color: var(--light-grey);
-  margin-top: 0.15rem;
-  letter-spacing: 0.01em;
+  margin-top: 0.1rem;
 }
-
 .lesson-list { padding: 0; }
 
 .lesson-item {
   display: flex;
   align-items: baseline;
   gap: 0.625rem;
-  padding: 0.4rem 1.25rem;
+  padding: 0.38rem 1.25rem;
   font-family: "Kanit", sans-serif;
   font-size: 0.82rem;
-  font-weight: 400;
   color: var(--light-grey);
   border-left: 3px solid transparent;
-  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
-  line-height: 1.4;
+  transition: background 0.1s, color 0.1s, border-color 0.1s;
+  line-height: 1.45;
 }
-.lesson-item:hover {
-  background: var(--surface-hover);
-  color: var(--highlight);
-}
+.lesson-item:hover { background: var(--surface-hover); color: var(--highlight); }
 .lesson-item.is-active {
   background: var(--accent-dim);
   color: var(--accent);
@@ -216,17 +309,15 @@ const currentTrack = TRACKS.find(t => t.id === data.track)!;
 }
 .lesson-num {
   font-family: "Audiowide", "Kanit", monospace;
-  font-size: 0.7rem;
+  font-size: 0.68rem;
   letter-spacing: 0.06em;
   color: var(--dark-grey);
   min-width: 1.5rem;
   flex-shrink: 0;
 }
 .lesson-item.is-active .lesson-num { color: var(--accent); }
-.lesson-name { line-height: 1.4; }
 
-/* ── Main layout ─────────────────────────────── */
-
+/* ── Main layout ──────────────────────────────────── */
 .main {
   margin-left: var(--sidebar-w);
   margin-top: var(--nav-h);
@@ -234,15 +325,13 @@ const currentTrack = TRACKS.find(t => t.id === data.track)!;
   display: flex;
   justify-content: center;
 }
-
 .lesson-wrap {
   width: 100%;
   max-width: var(--content-w);
   padding: 2.5rem 2.5rem 6rem;
 }
 
-/* ── Lesson header ───────────────────────────── */
-
+/* ── Lesson header ────────────────────────────────── */
 .lesson-head { margin-bottom: 2.75rem; }
 
 .breadcrumb {
@@ -269,15 +358,8 @@ const currentTrack = TRACKS.find(t => t.id === data.track)!;
   line-height: 1.15;
   margin-bottom: 1rem;
 }
-
-.meta-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-  margin-bottom: 1.25rem;
-}
-
-.badge {
+.meta-row { margin-bottom: 1rem; }
+.badge-muted {
   display: inline-flex;
   align-items: center;
   padding: 0.3em 0.75em;
@@ -285,99 +367,141 @@ const currentTrack = TRACKS.find(t => t.id === data.track)!;
   font-family: "Kanit", sans-serif;
   font-size: 0.72rem;
   font-weight: 600;
-  background: var(--accent-dim);
-  color: var(--accent);
-  border: 1px solid rgba(77,198,255,0.3);
-  letter-spacing: 0.02em;
-}
-.badge-muted {
   background: var(--surface);
   color: var(--light-grey);
-  border-color: var(--border);
+  border: 1px solid var(--border);
 }
 
-.objectives {
+/* ── Objectives ───────────────────────────────────── */
+.objectives-box {
   border: 1px solid var(--border);
   border-radius: var(--r);
   background: var(--surface);
   overflow: hidden;
-  transition: border-color 0.15s;
+  transition: border-color 0.2s;
 }
-.objectives[open] { border-color: rgba(77,198,255,0.3); }
-.objectives summary {
-  padding: 0.7rem 1rem;
-  font-family: "Kanit", sans-serif;
-  font-size: 0.82rem;
-  font-weight: 600;
-  color: var(--light-grey);
-  cursor: pointer;
-  user-select: none;
-  list-style: none;
+.objectives-box.is-complete {
+  border-color: rgba(77,198,255,0.5);
+  background: rgba(77,198,255,0.06);
+}
+
+.obj-header {
   display: flex;
   align-items: center;
-  gap: 0.6rem;
-  transition: color 0.12s;
+  justify-content: space-between;
+  padding: 0.65rem 1rem;
+  border-bottom: 1px solid var(--border-subtle);
 }
-.objectives summary:hover { color: var(--highlight); }
-.objectives summary::before {
-  content: '▶';
-  font-size: 0.55rem;
-  color: var(--accent);
-  transition: transform 0.18s ease;
+.obj-title {
+  font-family: "Audiowide", "Kanit", sans-serif;
+  font-size: 0.65rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--dark-grey);
 }
-.objectives[open] summary::before { transform: rotate(90deg); }
-.objectives ul {
-  padding: 0.25rem 1rem 0.875rem 2.25rem;
-  list-style: disc;
+.obj-counter {
+  font-family: "Audiowide", "Kanit", monospace;
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+  color: var(--dark-grey);
+  transition: color 0.2s;
 }
-.objectives li {
-  font-size: 0.85rem;
+.obj-counter.all-done { color: var(--accent); }
+
+.obj-list { padding: 0.4rem 0; }
+.obj-item { padding: 0; }
+
+.obj-label {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.875rem;
+  padding: 0.55rem 1rem;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.obj-label:hover { background: var(--surface-hover); }
+
+/* Hide native checkbox */
+.obj-check { position: absolute; opacity: 0; width: 0; height: 0; pointer-events: none; }
+
+/* Custom checkmark */
+.obj-checkmark {
+  flex-shrink: 0;
+  width: 17px;
+  height: 17px;
+  border-radius: 4px;
+  border: 1.5px solid var(--border);
+  background: transparent;
+  margin-top: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: border-color 0.15s, background 0.15s;
+}
+.obj-checkmark::after {
+  content: '';
+  display: block;
+  width: 9px;
+  height: 5px;
+  border-left: 2px solid transparent;
+  border-bottom: 2px solid transparent;
+  transform: rotate(-45deg) translateY(-1px);
+  transition: border-color 0.15s;
+}
+.obj-check:checked ~ .obj-checkmark {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+.obj-check:checked ~ .obj-checkmark::after {
+  border-color: var(--accent);
+}
+
+.obj-text {
+  font-family: "Kanit", sans-serif;
+  font-size: 0.88rem;
   color: var(--light-grey);
-  padding: 0.2rem 0;
   line-height: 1.55;
-  list-style: disc;
+  transition: color 0.15s;
+}
+.obj-check:checked ~ .obj-checkmark + .obj-text {
+  color: var(--dark-grey);
+  text-decoration: line-through;
+  text-decoration-color: var(--dark-grey);
 }
 
-/* ── Prose / lesson body ─────────────────────── */
-
-.lesson-body { font-family: "Kanit", sans-serif; font-weight: 400; }
+/* ── Prose ────────────────────────────────────────── */
+.lesson-body { font-family: "Kanit", sans-serif; }
 .lesson-body > * + * { margin-top: 1.25rem; }
 
 .lesson-body h2 {
   font-family: "Kanit", sans-serif;
-  font-size: 1.4rem;
+  font-size: 1.35rem;
   font-weight: 700;
   letter-spacing: -0.01em;
   color: var(--text);
   padding-top: 2.5rem;
   margin-top: 2.5rem !important;
-  padding-bottom: 0.65rem;
+  padding-bottom: 0.6rem;
   border-bottom: 1px solid var(--border);
 }
 .lesson-body h2:first-child { padding-top: 0; margin-top: 0 !important; }
 
 .lesson-body h3 {
   font-family: "Kanit", sans-serif;
-  font-size: 1.075rem;
+  font-size: 1.05rem;
   font-weight: 600;
   color: var(--text);
   margin-top: 2rem !important;
 }
-
 .lesson-body h4 {
   font-family: "Audiowide", "Kanit", sans-serif;
-  font-size: 0.85rem;
-  letter-spacing: 0.08em;
+  font-size: 0.75rem;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--accent);
   margin-top: 1.5rem !important;
 }
-
-.lesson-body p {
-  color: var(--light-grey);
-  line-height: 1.8;
-}
-
+.lesson-body p { color: var(--light-grey); line-height: 1.8; }
 .lesson-body strong { color: var(--text); font-weight: 600; }
 .lesson-body em { color: var(--highlight); font-style: italic; }
 
@@ -386,24 +510,14 @@ const currentTrack = TRACKS.find(t => t.id === data.track)!;
   border-bottom: 1px solid rgba(77,198,255,0.3);
   transition: border-color 0.15s, color 0.15s;
 }
-.lesson-body a:hover {
-  color: var(--accent-hover);
-  border-bottom-color: var(--accent);
-}
+.lesson-body a:hover { color: var(--accent-hover); border-bottom-color: var(--accent); }
 
-.lesson-body ul,
-.lesson-body ol {
-  padding-left: 1.625rem;
+.lesson-body ul, .lesson-body ol {
+  padding-left: 1.5rem;
   color: var(--light-grey);
 }
-.lesson-body ul li,
-.lesson-body ol li {
-  padding: 0.2rem 0;
-  line-height: 1.75;
-  list-style: disc;
-}
+.lesson-body li { padding: 0.2rem 0; line-height: 1.75; list-style: disc; }
 .lesson-body ol li { list-style: decimal; }
-.lesson-body li + li { margin-top: 0.1rem; }
 
 .lesson-body blockquote {
   border-left: 3px solid var(--accent);
@@ -411,13 +525,8 @@ const currentTrack = TRACKS.find(t => t.id === data.track)!;
   background: var(--accent-dim);
   border-radius: 0 var(--r-sm) var(--r-sm) 0;
 }
-.lesson-body blockquote p {
-  color: var(--light-grey);
-  font-style: italic;
-  margin: 0;
-}
+.lesson-body blockquote p { color: var(--highlight); font-style: italic; margin: 0; }
 
-/* Shiki-styled code blocks */
 .lesson-body pre {
   border-radius: var(--r);
   padding: 1.125rem 1.375rem;
@@ -429,7 +538,6 @@ const currentTrack = TRACKS.find(t => t.id === data.track)!;
   line-height: 1.65;
   font-family: ui-monospace, "Cascadia Code", "Source Code Pro", Menlo, Consolas, monospace;
 }
-
 .lesson-body code:not(pre > code) {
   font-family: ui-monospace, "Cascadia Code", "Source Code Pro", Menlo, Consolas, monospace;
   font-size: 0.86em;
@@ -440,20 +548,32 @@ const currentTrack = TRACKS.find(t => t.id === data.track)!;
   color: var(--highlight);
 }
 
-/* ── Prev / next nav ─────────────────────────── */
-
+/* ── Prev / next ──────────────────────────────────── */
 .lesson-foot {
   margin-top: 4rem;
   padding-top: 2rem;
   border-top: 1px solid var(--border);
 }
-
+.kbd-hint {
+  font-family: "Kanit", sans-serif;
+  font-size: 0.72rem;
+  color: var(--dark-grey);
+  margin-bottom: 1rem;
+  letter-spacing: 0.02em;
+}
+.kbd-hint span {
+  font-family: "Audiowide", "Kanit", monospace;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.1em 0.45em;
+  font-size: 0.82em;
+}
 .nav-pair {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 0.875rem;
 }
-
 .nav-card {
   display: flex;
   flex-direction: column;
@@ -470,10 +590,9 @@ const currentTrack = TRACKS.find(t => t.id === data.track)!;
   transform: translateY(-1px);
 }
 .nav-card-next { text-align: right; }
-
 .nav-dir {
   font-family: "Audiowide", "Kanit", sans-serif;
-  font-size: 0.7rem;
+  font-size: 0.65rem;
   letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--dark-grey);

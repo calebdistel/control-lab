@@ -1,0 +1,34 @@
+---
+interface Props { label?: string; }
+const { label = 'Key Concept' } = Astro.props;
+---
+<div class="callout callout-key">
+  <span class="callout-label">{label}</span>
+  <div class="callout-body"><slot /></div>
+</div>
+
+<style>
+.callout-key {
+  border-left: 3px solid var(--accent);
+  background: var(--accent-dim);
+  border-radius: 0 var(--r) var(--r) 0;
+  padding: 1rem 1.25rem;
+  margin: 1.75rem 0;
+}
+.callout-label {
+  display: block;
+  font-family: "Audiowide", "Kanit", sans-serif;
+  font-size: 0.65rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 0.5rem;
+}
+.callout-body :global(p) {
+  color: var(--highlight);
+  font-style: italic;
+  font-size: 1.0rem;
+  line-height: 1.7;
+  margin: 0;
+}
+</style>

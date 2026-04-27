@@ -3,9 +3,13 @@ import { getCollection } from 'astro:content';
 import LessonLayout from '../../../layouts/LessonLayout.astro';
 
 const TRACK_ORDER = [
-  'summer', 'fall',
-  'supplemental-s1', 'supplemental-s2', 'supplemental-s3',
-  'supplemental-s4', 'supplemental-s5',
+  'fundamentals',
+  'robot-code',
+  'motion-control',
+  'sensing-vision',
+  'autonomy',
+  'swerve',
+  'tooling',
 ];
 
 export async function getStaticPaths() {

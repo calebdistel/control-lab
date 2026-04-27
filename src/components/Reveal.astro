@@ -1,0 +1,59 @@
+---
+interface Props { label?: string; }
+const { label = 'Show answer' } = Astro.props;
+---
+<details class="reveal">
+  <summary>{label}</summary>
+  <div class="reveal-body"><slot /></div>
+</details>
+
+<style>
+.reveal {
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  margin: 1rem 0;
+  overflow: hidden;
+  transition: border-color 0.15s;
+}
+.reveal[open] { border-color: rgba(77,198,255,0.3); }
+.reveal summary {
+  padding: 0.7rem 1rem;
+  font-family: "Kanit", sans-serif;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--accent);
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  transition: background 0.12s;
+}
+.reveal summary:hover { background: var(--accent-dim); }
+.reveal summary::before {
+  content: '▶';
+  font-size: 0.55rem;
+  transition: transform 0.18s ease;
+}
+.reveal[open] summary::before { transform: rotate(90deg); }
+.reveal-body {
+  padding: 0.75rem 1rem 1rem;
+  border-top: 1px solid var(--border);
+  background: rgba(0,0,0,0.25);
+}
+.reveal-body :global(p) {
+  color: var(--light-grey);
+  margin: 0;
+  line-height: 1.7;
+}
+.reveal-body :global(p + p) { margin-top: 0.5rem; }
+.reveal-body :global(code) {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.1em 0.4em;
+  font-size: 0.87em;
+  color: var(--highlight);
+}
+</style>

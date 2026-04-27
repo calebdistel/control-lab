@@ -4,17 +4,16 @@ const lessons = defineCollection({
   type: 'content',
   schema: z.object({
     track: z.enum([
-      'summer',
-      'fall',
-      'supplemental-s1', // swerve
-      'supplemental-s2', // vision
-      'supplemental-s3', // auto
-      'supplemental-s4', // advanced control
-      'supplemental-s5', // tooling
+      'fundamentals',    // core programming concepts
+      'robot-code',      // WPILib, subsystems, commands
+      'motion-control',  // PID, feedforward, profiling
+      'sensing-vision',  // PhotonVision, pose estimation
+      'autonomy',        // PathPlanner, auto routines
+      'swerve',          // swerve kinematics & tuning
+      'tooling',         // git, debugging, AdvantageScope
     ]),
     lesson: z.number().int().positive(),
     title: z.string(),
-    duration: z.string(), // e.g. "20 min"
     prereqs: z.array(z.string()).default([]),
     objectives: z.array(z.string()).min(1).max(6),
     draft: z.boolean().default(false),
