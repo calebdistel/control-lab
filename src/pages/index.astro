@@ -1,0 +1,138 @@
+---
+import { getCollection } from 'astro:content';
+
+const allLessons = await getCollection('lessons', ({ data }) => !data.draft);
+allLessons.sort((a, b) => a.data.lesson - b.data.lesson);
+
+const tracks = [
+  { id: 'summer',          label: 'Summer · Foundations' },
+  { id: 'fall',            label: 'Fall · Implementation' },
+  { id: 'supplemental-s1', label: 'Supplemental · Swerve' },
+  { id: 'supplemental-s2', label: 'Supplemental · Vision' },
+  { id: 'supplemental-s3', label: 'Supplemental · Auto' },
+  { id: 'supplemental-s4', label: 'Supplemental · Advanced Control' },
+  { id: 'supplemental-s5', label: 'Supplemental · Tooling' },
+];
+
+const byTrack = Object.fromEntries(
+  tracks.map(t => [t.id, allLessons.filter(l => l.data.track === t.id)])
+);
+---
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Control Lab — FRC 498</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #0d1117;
+      color: #e6edf3;
+      min-height: 100vh;
+      padding: 3rem 1.5rem;
+    }
+    .site-header {
+      max-width: 760px;
+      margin: 0 auto 3rem;
+    }
+    .site-header h1 {
+      font-size: 2rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      color: #f0f6fc;
+    }
+    .site-header p {
+      margin-top: 0.5rem;
+      color: #8b949e;
+      font-size: 1rem;
+    }
+    .tracks {
+      max-width: 760px;
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 2.5rem;
+    }
+    .track-label {
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #8b949e;
+      margin-bottom: 0.75rem;
+    }
+    .lesson-list {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 0.375rem;
+    }
+    .lesson-list a {
+      display: flex;
+      align-items: baseline;
+      gap: 0.75rem;
+      padding: 0.6rem 0.875rem;
+      border-radius: 6px;
+      text-decoration: none;
+      color: #e6edf3;
+      border: 1px solid transparent;
+      transition: background 0.1s, border-color 0.1s;
+    }
+    .lesson-list a:hover {
+      background: #161b22;
+      border-color: #30363d;
+    }
+    .lesson-num {
+      font-size: 0.75rem;
+      color: #8b949e;
+      font-variant-numeric: tabular-nums;
+      min-width: 1.5rem;
+    }
+    .lesson-title {
+      font-size: 0.95rem;
+    }
+    .lesson-duration {
+      font-size: 0.75rem;
+      color: #8b949e;
+      margin-left: auto;
+    }
+    .empty {
+      font-size: 0.85rem;
+      color: #484f58;
+      font-style: italic;
+      padding: 0.5rem 0.875rem;
+    }
+  </style>
+</head>
+<body>
+  <header class="site-header">
+    <h1>Control Lab</h1>
+    <p>FRC 498 · Programming &amp; Control Systems Curriculum</p>
+  </header>
+
+  <main class="tracks">
+    {tracks.map(track => (
+      <section>
+        <div class="track-label">{track.label}</div>
+        {byTrack[track.id].length > 0 ? (
+          <ul class="lesson-list">
+            {byTrack[track.id].map(lesson => (
+              <li>
+                <a href={`/lessons/${lesson.data.track}/${lesson.slug}`}>
+                  <span class="lesson-num">{String(lesson.data.lesson).padStart(2, '0')}</span>
+                  <span class="lesson-title">{lesson.data.title}</span>
+                  <span class="lesson-duration">{lesson.data.duration}</span>
+                </a>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p class="empty">Coming soon</p>
+        )}
+      </section>
+    ))}
+  </main>
+</body>
+</html>
