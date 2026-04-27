@@ -204,6 +204,83 @@ a { color: inherit; text-decoration: none; }
   display: grid;
   grid-template-columns: 1fr 200px;
 }
+/* Code-mode layout: code panel takes more room */
+.ct-body.ct-body-code {
+  grid-template-columns: 1fr 180px;
+}
+
+/* ── Code panel (real-code mode) ── */
+.ct-code-panel {
+  padding: 0.5rem 0;
+  border-right: 1px solid var(--border);
+  overflow-x: auto;
+  font-family: ui-monospace, "Cascadia Code", "Source Code Pro", Menlo, Consolas, monospace;
+  font-size: 0.84rem;
+  line-height: 1.6;
+}
+.ct-line {
+  display: flex;
+  align-items: baseline;
+  gap: 0;
+  padding: 0.18rem 0;
+  border-left: 3px solid transparent;
+  transition: background 0.12s, border-color 0.12s;
+}
+.ct-line-active {
+  background: var(--accent-dim);
+  border-left-color: var(--accent);
+}
+.ct-line-num {
+  min-width: 2.5rem;
+  padding: 0 0.75rem 0 0.75rem;
+  text-align: right;
+  color: var(--dark-grey);
+  font-size: 0.72rem;
+  user-select: none;
+  flex-shrink: 0;
+}
+.ct-line-active .ct-line-num { color: var(--accent); }
+.ct-line-text {
+  width: 1.25rem;
+  flex-shrink: 0;
+  color: var(--accent);
+  font-size: 0.7rem;
+  user-select: none;
+}
+.ct-line-arrow-hidden { visibility: hidden; }
+.ct-line-code {
+  white-space: pre;
+  flex: 1;
+  padding-right: 1rem;
+}
+
+/* ── Annotation bar (code mode) ── */
+.ct-annotation {
+  padding: 0.6rem 1.25rem;
+  border-top: 1px solid var(--border);
+  background: rgba(0,0,0,0.15);
+  font-family: "Kanit", sans-serif;
+  font-size: 0.84rem;
+  color: var(--light-grey);
+  min-height: 2.4rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.ct-annotation-arrow {
+  color: var(--accent);
+  font-size: 0.65rem;
+  flex-shrink: 0;
+}
+.ct-annotation-comment {
+  color: var(--dark-grey);
+  font-style: italic;
+}
+.ct-annotation-placeholder {
+  color: var(--dark-grey);
+  font-style: italic;
+  font-size: 0.8rem;
+}
 .ct-steps {
   padding: 0.5rem 0;
   border-right: 1px solid var(--border);

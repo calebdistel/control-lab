@@ -11,17 +11,23 @@ objectives:
 
 import Key from '../../../components/Key.astro';
 import Try from '../../../components/Try.astro';
-import SandwichSim from '../../../components/demos/SandwichSim.jsx';
+import Warn from '../../../components/Warn.astro';
 import CodeTrace from '../../../components/demos/CodeTrace.jsx';
 import Quiz from '../../../components/demos/Quiz.jsx';
 
 ## Hook
 
-Picture this: you tell your friend, "make me a sandwich." They walk into the kitchen and come back two minutes later with a sandwich. Easy.
+Your first robot task: move an arm from 0° to 90° and hold it there.
 
-Now imagine your friend is a robot. You say "make me a sandwich." The robot stands there. You sigh, and try again: "Pick up the bread." The robot picks up the entire loaf — wrapper and all — and hands it to you.
+You write what seems obvious:
 
-Programming a robot is exactly this conversation. Every instruction you'd skip when talking to a human, you have to say out loud to the machine.
+```java
+void periodic() {
+    arm.moveToAngle(90);
+}
+```
+
+The robot doesn't move. There is no `moveToAngle` method — the arm doesn't know what that means. It only knows "set motor power to this number." You can't tell the robot *what* to accomplish. You have to tell it exactly *how*, step by step.
 
 ## Core concept
 
@@ -33,99 +39,110 @@ That last part is the trap. A computer will do precisely what your program tells
 
 ## Walk-through
 
-The task: get a robot arm from resting at 0° to holding a game piece at 90°.
+The task: move an arm from 0° to 90°. The arm has a motor and an encoder (a sensor that measures the current angle).
 
-A first attempt:
+Instead of "move to 90°" (a goal), the program has to describe *exactly* what to do:
 
-> Move the arm to 90°.
-
-That's not a program — that's a goal. A program would look more like:
-
-1. Read the current arm angle from the sensor.
-2. If the angle is less than 90°, run the motor up.
-3. If the angle is more than 90°, run the motor down.
-4. If the angle is close enough to 90°, stop the motor.
+1. Read the current angle from the encoder.
+2. If the angle is less than 88°, run the motor forward.
+3. If the angle is greater than 92°, run the motor backward.
+4. If the angle is between 88° and 92°, stop the motor.
 5. Go back to step 1.
 
-Notice three things. Every step is something the robot can **actually do** — "move to 90°" isn't one of those things, but "run the motor" is. There's a **loop** — the robot does this ~50 times per second, forever. And there's a **decision** — "if… then…" is how a program responds to the world.
-
-This five-line program is, almost literally, your first controller. Step through it once here to see exactly what happens on one iteration when `angle` starts at 45°:
-
-<CodeTrace
-  client:load
-  variables={{ angle: 45, motor: "off" }}
-  steps={[
-    { code: "angle = sensor.read()", state: { angle: 45, motor: "off" }, comment: "read hardware" },
-    { code: "if angle < 90 → motor UP", state: { angle: 45, motor: "up" }, comment: "condition true" },
-    { code: "if angle > 90 → motor DOWN", state: { angle: 45, motor: "up" }, comment: "condition false" },
-    { code: "if |angle - 90| < 2 → STOP", state: { angle: 45, motor: "up" }, comment: "condition false" },
-    { code: "→ go back to step 1", state: { angle: 47, motor: "up" }, comment: "loop!" },
-  ]}
-/>
-
-The motor ran for one cycle and `angle` ticked up by 2°. On the next iteration it checks again. This is how all robot control works.
+That's not five goals — it's five *actions the hardware can actually do*. The robot executes this loop fifty times per second. Each cycle it reads the sensor, makes a decision, and acts.
 
 ## Interactive demo
 
-Try writing the sandwich program yourself. The robot will do exactly — and only — what you tell it.
+Here's those five steps as real Java code. The arm starts at 45°. Step through and watch what the program actually does:
 
-<SandwichSim client:load />
+<CodeTrace
+  client:load
+  code={`void periodic() {
+    double angle = encoder.getAngle();
+    if (angle < 88) {
+        motor.set(0.5);
+    } else if (angle > 92) {
+        motor.set(-0.5);
+    } else {
+        motor.set(0.0);
+    }
+}`}
+  variables={{ call: 1, angle: 45, motor: 0 }}
+  steps={[
+    { line: 1, label: "periodic() is called — one loop cycle begins", state: { call: 1, angle: 45, motor: 0 } },
+    { line: 2, label: "Read encoder: angle = 45°", state: { call: 1, angle: 45, motor: 0 } },
+    { line: 3, label: "45 < 88 → true — we need to move forward", state: { call: 1, angle: 45, motor: 0 } },
+    { line: 4, label: "motor.set(0.5) — spin forward at half power", state: { call: 1, angle: 45, motor: 0.5 } },
+    { line: 9, label: "method returns — 20ms passes, arm moves slightly", state: { call: 2, angle: 51, motor: 0.5 } },
+    { line: 2, label: "Next call: angle = 51° — still short of 88°", state: { call: 2, angle: 51, motor: 0.5 } },
+    { line: 3, label: "51 < 88 → still true", state: { call: 2, angle: 51, motor: 0.5 } },
+    { line: 4, label: "motor.set(0.5) again — keeps running", state: { call: 2, angle: 51, motor: 0.5 } },
+    { line: 9, label: "...many cycles later, angle = 89°", state: { call: 3, angle: 89, motor: 0.5 } },
+    { line: 2, label: "Read encoder: angle = 89°", state: { call: 3, angle: 89, motor: 0.5 } },
+    { line: 3, label: "89 < 88 → false", state: { call: 3, angle: 89, motor: 0.5 } },
+    { line: 5, label: "89 > 92 → false", state: { call: 3, angle: 89, motor: 0.5 } },
+    { line: 8, label: "else: angle is in range — motor.set(0.0)", state: { call: 3, angle: 89, motor: 0.0 } },
+  ]}
+/>
 
-Work through these in order:
+The program never says "go to 90°." It says: read the sensor, compare to a threshold, set a motor power. The robot reaches 90° as a *consequence* of running those four lines thousands of times.
 
-1. Try the "obvious" 3-step program first. Note what goes wrong.
-2. Add the missing instructions to fix it.
-3. Once it works, remove one instruction and predict the failure before you click RUN.
-
-The point isn't to make a sandwich. The point is to feel how literal the robot is.
+<Warn>
+Notice what happens if you remove the `else` branch: the motor never gets turned off. The arm would overshoot 90°, then the `angle > 92` check would kick in and drive it back — past 88°, triggering the forward motor again. The arm would oscillate forever. Every branch matters.
+</Warn>
 
 ## Try it yourself
 
 <Try>
-Trace this program by hand — don't run it. Write the value of `angle` after each step, then check.
+Trace this program by hand. Write the value of `angle` after each step before you check.
 
-```
-angle = 0
-Step A:  angle = angle + 30
-Step B:  angle = angle + 30
-Step C:  angle = angle - 10
-Step D:  angle = angle + 30
+```java
+int angle = 0;
+angle = angle + 30;  // Step A
+angle = angle + 30;  // Step B
+angle = angle - 10;  // Step C
+angle = angle + 30;  // Step D
 ```
 </Try>
 
 <CodeTrace
   client:load
+  code={`int angle = 0;
+angle = angle + 30;
+angle = angle + 30;
+angle = angle - 10;
+angle = angle + 30;`}
   variables={{ angle: 0 }}
   steps={[
-    { code: "angle = 0",            state: { angle: 0  }, comment: "initial" },
-    { code: "angle = angle + 30",   state: { angle: 30 }, comment: "Step A" },
-    { code: "angle = angle + 30",   state: { angle: 60 }, comment: "Step B" },
-    { code: "angle = angle - 10",   state: { angle: 50 }, comment: "Step C" },
-    { code: "angle = angle + 30",   state: { angle: 80 }, comment: "Step D" },
+    { line: 1, label: "angle = 0 — initialize", state: { angle: 0 } },
+    { line: 2, label: "angle = 0 + 30 = 30  (Step A)", state: { angle: 30 } },
+    { line: 3, label: "angle = 30 + 30 = 60  (Step B)", state: { angle: 60 } },
+    { line: 4, label: "angle = 60 − 10 = 50  (Step C)", state: { angle: 50 } },
+    { line: 5, label: "angle = 50 + 30 = 80  (Step D)", state: { angle: 80 } },
   ]}
 />
 
 <Quiz
   client:load
-  question="What is the value of `angle` after Step D?"
+  question="What is the value of angle after Step D?"
   type="number"
   correct={80}
-  explanation="0 → +30 = 30 → +30 = 60 → −10 = 50 → +30 = 80. If you got 80, you just executed a program in your head. That's all programming is — just faster."
+  explanation="0 → +30 = 30 → +30 = 60 → −10 = 50 → +30 = 80. If you got 80, you just ran a program in your head. That's all a computer does — just faster."
 />
 
 ## Key takeaways
 
-- A program is a sequence of instructions executed in order.
+- A program is a sequence of instructions, executed in order.
 - Computers do exactly what you say — including your mistakes.
-- Robot programs loop continuously, reading sensors and deciding what to do.
-- "Move the arm to 90°" is a goal. "Run the motor while angle < 90°" is a program.
+- Robot programs loop continuously, reading sensors and acting on what they find.
+- "Move to 90°" is a goal. "If angle < 88, run the motor forward" is a program.
 
 ## Common confusions
 
-**"This seems too simple."** It is, on purpose. The reason students struggle later isn't that programs get conceptually complicated — it's that they get *long*. The discipline of being explicit is what we're building here.
+**"This seems too simple."** It is, on purpose. Programs don't get conceptually harder — they get *longer*. The skill you're building right now is being explicit, and it's easier to learn on something small.
 
-**"Won't the robot figure out what I mean?"** No. Every senior on 498 has lost an hour debugging because they assumed the robot knew something it didn't. A robot has no common sense — only instructions.
+**"Won't the robot figure out what I mean?"** No. A robot has no common sense — only instructions. Every 498 senior has spent at least one late night debugging because they assumed the robot knew something it didn't.
 
 ## What's next
 
-In **Lesson 02**, we'll look at *state and memory* — how a program remembers things between steps, and why getting that wrong is the source of about half the bugs in any robot codebase.
+In **Lesson 02**, we'll look at *state and memory* — how a program remembers values between loop cycles, and why where you declare a variable can quietly break everything.
