@@ -15,6 +15,7 @@ import Note from '../../../components/Note.astro';
 import Warn from '../../../components/Warn.astro';
 import CodeTrace from '../../../components/demos/CodeTrace.jsx';
 import Quiz from '../../../components/demos/Quiz.jsx';
+import CodeEditor from '../../../components/demos/CodeEditor.jsx';
 
 ## Hook
 
@@ -163,6 +164,37 @@ boolean inRange = (power > 0.5) && (count < 5);`}
 **"Why does `1 / 2` equal 0?"** Java doesn't know you want a fraction — you gave it two integers. It treats `/` as "how many whole times does 2 go into 1?" The answer is 0.
 
 **"When do I use `=` vs `==`?"** Single `=` assigns a value (`angle = 90`). Double `==` compares two values (`angle == 90`). Using `=` inside an `if` is a common bug Java will usually catch.
+
+## Challenge
+
+<Try>
+An encoder reads 1500 ticks. The maximum is 4000 ticks. Compute the position as a percentage (0.0 to 1.0) and print it. Also check: is the position past the halfway point? Print `true` or `false`.
+
+Watch out for integer division — both values start as `int`.
+</Try>
+
+<CodeEditor
+  client:load
+  starterCode={`public class Main {
+    public static void main(String[] args) {
+        int ticks = 1500;
+        int maxTicks = 4000;
+
+        // Compute position as a double (e.g. 0.375)
+        double position = 0; // fix this
+
+        // Is the position past halfway (> 0.5)?
+        boolean pastHalf = false; // fix this
+
+        System.out.println(position);
+        System.out.println(pastHalf);
+    }
+}`}
+  testCases={[
+    { label: "position = 1500/4000 = 0.375, pastHalf = false", expected: "0.375\nfalse" },
+  ]}
+  hint="Use (double) ticks / maxTicks to avoid integer division. pastHalf is just position > 0.5."
+/>
 
 ## What's next
 

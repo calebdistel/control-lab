@@ -14,6 +14,7 @@ import Try from '../../../components/Try.astro';
 import Warn from '../../../components/Warn.astro';
 import CodeTrace from '../../../components/demos/CodeTrace.jsx';
 import Quiz from '../../../components/demos/Quiz.jsx';
+import CodeEditor from '../../../components/demos/CodeEditor.jsx';
 
 ## Hook
 
@@ -132,6 +133,34 @@ if (angle < 88) {
 **"I have three if statements in a row, isn't that the same as if/else-if?"** No. Three separate `if` statements all evaluate independently. If the first one changes a variable, the second one sees the new value. `else if` short-circuits — once a true branch is found, the rest don't run.
 
 **"My condition is always true no matter what I do."** Check for `=` vs `==`. Also check whether you're comparing the right variables — printing intermediate values helps.
+
+## Challenge
+
+<Try>
+Write a `batteryStatus` method that classifies a battery voltage reading. Use it to print the status for three readings.
+
+Rules: voltage ≥ 12.0 → `"OK"`, 9.0 ≤ voltage < 12.0 → `"LOW"`, voltage < 9.0 → `"CRITICAL"`
+</Try>
+
+<CodeEditor
+  client:load
+  starterCode={`public class Main {
+    static String batteryStatus(double voltage) {
+        // Return "OK", "LOW", or "CRITICAL" based on the rules
+        return ""; // replace this
+    }
+
+    public static void main(String[] args) {
+        System.out.println(batteryStatus(12.6));
+        System.out.println(batteryStatus(10.2));
+        System.out.println(batteryStatus(8.4));
+    }
+}`}
+  testCases={[
+    { label: "12.6 → OK, 10.2 → LOW, 8.4 → CRITICAL", expected: "OK\nLOW\nCRITICAL" },
+  ]}
+  hint="Use an if/else-if/else chain. The order matters — check the highest threshold first."
+/>
 
 ## What's next
 

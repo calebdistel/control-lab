@@ -15,6 +15,7 @@ import Note from '../../../components/Note.astro';
 import Warn from '../../../components/Warn.astro';
 import CodeTrace from '../../../components/demos/CodeTrace.jsx';
 import Quiz from '../../../components/demos/Quiz.jsx';
+import CodeEditor from '../../../components/demos/CodeEditor.jsx';
 
 ## Hook
 
@@ -53,19 +54,19 @@ Step through this buggy version. Watch what happens to `count` across two consec
         System.out.println(count);
     }
 }`}
-  variables={{ call: 1, count: "–" }}
+  variables={{ call: 1 }}
   steps={[
-    { line: 1, label: "periodic() is called — call #1 begins", state: { call: 1, count: "–" } },
-    { line: 2, label: "int count = 0 — a brand new variable, created fresh this call", state: { call: 1, count: 0 } },
+    { line: 1, label: "periodic() is called — call #1 begins", state: { call: 1 } },
+    { line: 2, label: "int count = 0 — brand new variable, created this call", state: { call: 1, count: 0 } },
     { line: 3, label: "sensor.hasGamePiece() → true", state: { call: 1, count: 0 } },
     { line: 4, label: "count = count + 1 → count is now 1", state: { call: 1, count: 1 } },
-    { line: 5, label: "println prints: \"Collected: 1\"", state: { call: 1, count: 1 } },
-    { line: 7, label: "method returns — count is destroyed", state: { call: 1, count: "gone" }, comment: "count ceases to exist" },
-    { line: 1, label: "periodic() is called again — call #2 begins", state: { call: 2, count: "–" } },
+    { line: 5, label: "System.out.println(count) — prints 1", state: { call: 1, count: 1 }, console: "1" },
+    { line: 7, label: "method returns — count is destroyed", state: { call: 1, count: null }, comment: "count ceases to exist" },
+    { line: 1, label: "periodic() is called again — call #2 begins", state: { call: 2 } },
     { line: 2, label: "int count = 0 — a completely new variable, back to zero", state: { call: 2, count: 0 }, comment: "memory of call #1 is gone" },
     { line: 3, label: "sensor.hasGamePiece() → true again", state: { call: 2, count: 0 } },
     { line: 4, label: "count = count + 1 → still just 1", state: { call: 2, count: 1 } },
-    { line: 5, label: "println prints: \"Collected: 1\" — again", state: { call: 2, count: 1 }, comment: "stuck at 1 forever" },
+    { line: 5, label: "System.out.println(count) — still prints 1", state: { call: 2, count: 1 }, console: "1", comment: "stuck at 1 forever" },
   ]}
 />
 
@@ -87,16 +88,16 @@ void periodic() {
 }`}
   variables={{ call: 1, count: 0 }}
   steps={[
-    { line: 1, label: "count = 0 — declared once when the object is created", state: { call: 1, count: 0 }, comment: "runs at startup, not per call" },
+    { line: 1, label: "count = 0 — declared once at startup, lives on the object", state: { call: 1, count: 0 }, comment: "runs once, not per call" },
     { line: 3, label: "periodic() called — call #1", state: { call: 1, count: 0 } },
     { line: 4, label: "sensor.hasGamePiece() → true", state: { call: 1, count: 0 } },
     { line: 5, label: "count = count + 1 → count is now 1", state: { call: 1, count: 1 } },
-    { line: 6, label: "println prints: \"Collected: 1\"", state: { call: 1, count: 1 } },
-    { line: 7, label: "method returns — but count field survives", state: { call: 2, count: 1 }, comment: "count lives on" },
+    { line: 6, label: "System.out.println(count) — prints 1", state: { call: 1, count: 1 }, console: "1" },
+    { line: 7, label: "method returns — count field survives as 1", state: { call: 2, count: 1 }, comment: "count lives on" },
     { line: 3, label: "periodic() called — call #2", state: { call: 2, count: 1 } },
     { line: 4, label: "sensor.hasGamePiece() → true again", state: { call: 2, count: 1 } },
     { line: 5, label: "count = count + 1 → count is now 2", state: { call: 2, count: 2 } },
-    { line: 6, label: "println prints: \"Collected: 2\"", state: { call: 2, count: 2 }, comment: "accumulates correctly" },
+    { line: 6, label: "System.out.println(count) — prints 2", state: { call: 2, count: 2 }, console: "2", comment: "accumulates correctly" },
   ]}
 />
 
@@ -145,9 +146,9 @@ void periodic() {
     if (turboHeld) boost = boost + 0.2;
     speed = speed + boost;
 }`}
-  variables={{ call: 1, speed: 0.5, boost: "–" }}
+  variables={{ call: 1, speed: 0.5 }}
   steps={[
-    { line: 4, label: "boost = 0.0 — reset to zero every call", state: { call: 1, speed: 0.5, boost: 0.0 } },
+    { line: 4, label: "boost = 0.0 — local variable created fresh every call", state: { call: 1, speed: 0.5, boost: 0.0 } },
     { line: 5, label: "turboHeld is true → boost = 0.0 + 0.2 = 0.2", state: { call: 1, speed: 0.5, boost: 0.2 } },
     { line: 6, label: "speed = 0.5 + 0.2 = 0.7", state: { call: 1, speed: 0.7, boost: 0.2 } },
     { line: 4, label: "Call #2 — boost resets again", state: { call: 2, speed: 0.7, boost: 0.0 } },
@@ -179,6 +180,33 @@ void periodic() {
 **"Why not just make everything a field?"** Local variables communicate intent — "this value only matters right now." Overusing fields makes it harder to understand what the robot is remembering and when. Use local variables for intermediate calculations you don't need to keep.
 
 **"My field resets when I redeploy."** Redeploying reboots the JVM — all fields reset to their initial values. If you need something to survive a reboot, you'd have to write it to disk or read it from a sensor. In FRC this is rare; most state should reset on startup anyway.
+
+## Challenge
+
+<Try>
+A counter field starts at 0. Simulate four calls to a `periodic()` method that increments it by 1 each call and prints the new value. Your output should be four lines: 1, 2, 3, 4.
+</Try>
+
+<CodeEditor
+  client:load
+  starterCode={`public class Main {
+    // Field: persists across all calls
+    static int count = 0;
+
+    static void periodic() {
+        count = count + 1;
+        System.out.println(count);
+    }
+
+    public static void main(String[] args) {
+        // Call periodic four times
+    }
+}`}
+  testCases={[
+    { label: "Four periodic calls print 1 through 4", expected: "1\n2\n3\n4" },
+  ]}
+  hint="Just call periodic() four times in main. The field count keeps its value between calls."
+/>
 
 ## What's next
 

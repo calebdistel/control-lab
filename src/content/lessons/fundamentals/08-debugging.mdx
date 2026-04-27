@@ -15,6 +15,7 @@ import Note from '../../../components/Note.astro';
 import Warn from '../../../components/Warn.astro';
 import CodeTrace from '../../../components/demos/CodeTrace.jsx';
 import Quiz from '../../../components/demos/Quiz.jsx';
+import CodeEditor from '../../../components/demos/CodeEditor.jsx';
 
 ## Hook
 
@@ -154,6 +155,39 @@ motor.set(motorPower);
 **"I added prints but the console is too fast to read."** Add a counter and only print every 50 cycles: `if (count++ % 50 == 0) System.out.println(...)`. Or use SmartDashboard — it throttles automatically.
 
 **"The bug disappears when I add print statements."** Timing-sensitive bugs (race conditions) can shift when you add logging. This usually means there's a threading issue or a sensor read that takes longer than you think.
+
+## Challenge
+
+<Try>
+The code below should print the motor command ("forward", "back", or "stop") for four arm angles given a target of 90° and a deadband of ±5°. It has a bug. Run it, see what it prints, figure out what's wrong, and fix it.
+
+Expected output: `forward`, `forward`, `stop`, `back`
+</Try>
+
+<CodeEditor
+  client:load
+  starterCode={`public class Main {
+    public static void main(String[] args) {
+        int target = 90;
+        int[] angles = {0, 45, 90, 135};
+
+        for (int angle : angles) {
+            int error = angle - target;  // BUG is on this line
+            if (error > 5) {
+                System.out.println("forward");
+            } else if (error < -5) {
+                System.out.println("back");
+            } else {
+                System.out.println("stop");
+            }
+        }
+    }
+}`}
+  testCases={[
+    { label: "forward, forward, stop, back", expected: "forward\nforward\nstop\nback" },
+  ]}
+  hint="Run the code first and read the output. Then ask: what does 'error' represent? Should it be angle minus target, or target minus angle?"
+/>
 
 ## What's next
 

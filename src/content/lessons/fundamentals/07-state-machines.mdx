@@ -16,6 +16,7 @@ import Warn from '../../../components/Warn.astro';
 import CodeTrace from '../../../components/demos/CodeTrace.jsx';
 import Quiz from '../../../components/demos/Quiz.jsx';
 import StateDiagram from '../../../components/demos/StateDiagram.jsx';
+import CodeEditor from '../../../components/demos/CodeEditor.jsx';
 
 ## Hook
 
@@ -178,6 +179,41 @@ What is the final state?
 **"What if two events happen at the same time?"** In `periodic()`, transitions happen in the order you check them. The first matching condition wins. Design your checks so the priority order makes sense.
 
 **"When is a state machine overkill?"** For simple two-state behavior (on/off), a boolean field is fine. Use an FSM when you have three or more distinct modes with well-defined transitions.
+
+## Challenge
+
+<Try>
+Implement the transitions for a simple 3-state machine: `IDLE`, `RUNNING`, `ERROR`.
+
+- `IDLE` + `"start"` → `RUNNING`
+- `RUNNING` + `"done"` → `IDLE`
+- `RUNNING` + `"fault"` → `ERROR`
+- `ERROR` + `"reset"` → `IDLE`
+- Any other combination returns the current state unchanged.
+</Try>
+
+<CodeEditor
+  client:load
+  starterCode={`public class Main {
+    static String transition(String state, String event) {
+        // Implement the state machine transitions above
+        return state; // replace this
+    }
+
+    public static void main(String[] args) {
+        String s = "IDLE";
+        s = transition(s, "start");  System.out.println(s); // RUNNING
+        s = transition(s, "done");   System.out.println(s); // IDLE
+        s = transition(s, "start");  System.out.println(s); // RUNNING
+        s = transition(s, "fault");  System.out.println(s); // ERROR
+        s = transition(s, "reset");  System.out.println(s); // IDLE
+    }
+}`}
+  testCases={[
+    { label: "Full transition sequence", expected: "RUNNING\nIDLE\nRUNNING\nERROR\nIDLE" },
+  ]}
+  hint="Use a series of if/else-if checks: if (state.equals('IDLE') && event.equals('start')) return 'RUNNING'; etc."
+/>
 
 ## What's next
 

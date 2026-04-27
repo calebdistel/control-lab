@@ -15,6 +15,7 @@ import Warn from '../../../components/Warn.astro';
 import Note from '../../../components/Note.astro';
 import CodeTrace from '../../../components/demos/CodeTrace.jsx';
 import Quiz from '../../../components/demos/Quiz.jsx';
+import CodeEditor from '../../../components/demos/CodeEditor.jsx';
 
 ## Hook
 
@@ -153,6 +154,27 @@ while (i <= 4) {
 **"I wrote `while (true)` — now the robot doesn't respond."** You've blocked `periodic()`. Kill the code (`Ctrl+C` or disable), remove the blocking loop, and use a state machine or command instead.
 
 **"My loop runs one too many or one too few times."** Check whether the condition uses `<` or `<=`. Off-by-one errors are extremely common.
+
+## Challenge
+
+<Try>
+The driver calls a countdown before auto starts. Use a loop to print the numbers 5 down to 1, then print `"GO!"`. No hardcoded print statements — one loop handles the countdown.
+</Try>
+
+<CodeEditor
+  client:load
+  starterCode={`public class Main {
+    public static void main(String[] args) {
+        // Print 5, 4, 3, 2, 1, then "GO!"
+        // Use a loop — don't write 5 separate println calls
+
+    }
+}`}
+  testCases={[
+    { label: "Countdown from 5 to 1 then GO!", expected: "5\n4\n3\n2\n1\nGO!" },
+  ]}
+  hint="Start i at 5, loop while i >= 1, decrement each iteration. Print 'GO!' after the loop."
+/>
 
 ## What's next
 

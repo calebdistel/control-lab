@@ -14,6 +14,7 @@ import Try from '../../../components/Try.astro';
 import Note from '../../../components/Note.astro';
 import CodeTrace from '../../../components/demos/CodeTrace.jsx';
 import Quiz from '../../../components/demos/Quiz.jsx';
+import CodeEditor from '../../../components/demos/CodeEditor.jsx';
 
 ## Hook
 
@@ -127,6 +128,33 @@ double clamp(double value, double min, double max) {
 **"I changed the parameter inside the function — why didn't the caller's variable change?"** Java passes primitives (int, double, boolean) *by value* — the function gets a copy. Changing `value` inside `clamp` doesn't affect whatever variable the caller passed in.
 
 **"My function compiles but returns the wrong thing."** Add a `System.out.println` right before each `return` to see which one is actually executing. Trace it like the CodeTrace above.
+
+## Challenge
+
+<Try>
+A joystick axis returns values from -1.0 to 1.0, but small movements near zero are just noise. Write a `deadband` function: if the absolute value of the input is less than a threshold, return 0.0; otherwise return the input unchanged.
+</Try>
+
+<CodeEditor
+  client:load
+  starterCode={`public class Main {
+    static double deadband(double input, double threshold) {
+        // Return 0.0 if |input| < threshold, else return input
+        return input; // fix this
+    }
+
+    public static void main(String[] args) {
+        System.out.println(deadband(0.04, 0.1));   // noise — return 0.0
+        System.out.println(deadband(-0.03, 0.1));  // noise — return 0.0
+        System.out.println(deadband(0.6, 0.1));    // real input — return 0.6
+        System.out.println(deadband(-0.9, 0.1));   // real input — return -0.9
+    }
+}`}
+  testCases={[
+    { label: "Small values zeroed, large values pass through", expected: "0.0\n0.0\n0.6\n-0.9" },
+  ]}
+  hint="Math.abs(input) gives you the absolute value. Compare that to threshold."
+/>
 
 ## What's next
 

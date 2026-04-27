@@ -14,6 +14,7 @@ import Try from '../../../components/Try.astro';
 import Warn from '../../../components/Warn.astro';
 import CodeTrace from '../../../components/demos/CodeTrace.jsx';
 import Quiz from '../../../components/demos/Quiz.jsx';
+import CodeEditor from '../../../components/demos/CodeEditor.jsx';
 
 ## Hook
 
@@ -142,6 +143,34 @@ angle = angle + 30;`}
 **"This seems too simple."** It is, on purpose. Programs don't get conceptually harder — they get *longer*. The skill you're building right now is being explicit, and it's easier to learn on something small.
 
 **"Won't the robot figure out what I mean?"** No. A robot has no common sense — only instructions. Every 498 senior has spent at least one late night debugging because they assumed the robot knew something it didn't.
+
+## Challenge
+
+<Try>
+A robot arm starts at 0°. Your program runs four moves in sequence. Write them as Java statements and print the final angle.
+
+Moves: add 45°, add 30°, subtract 20°, add 10°
+</Try>
+
+<CodeEditor
+  client:load
+  starterCode={`public class Main {
+    public static void main(String[] args) {
+        int angle = 0;
+
+        // Move 1: add 45
+        // Move 2: add 30
+        // Move 3: subtract 20
+        // Move 4: add 10
+
+        System.out.println(angle);
+    }
+}`}
+  testCases={[
+    { label: "Final angle after all four moves", expected: "65" },
+  ]}
+  hint="Each move is one line: angle = angle + 45; etc. Execute them in order, then print."
+/>
 
 ## What's next
 
