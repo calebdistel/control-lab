@@ -8,7 +8,7 @@ import { closeBrackets } from '@codemirror/autocomplete';
 import { java } from '@codemirror/lang-java';
 import { tags } from '@lezer/highlight';
 
-const PISTON_URL = 'https://emkc.org/api/v2/piston/execute';
+const WANDBOX_URL = 'https://wandbox.org/api/compile.json';
 
 // ── CobraLink theme ───────────────────────────────────────────
 const cobraTheme = EditorView.theme({
@@ -84,29 +84,34 @@ function normalize(s) {
 }
 
 async function runCode(code, stdin = '') {
-  const res = await fetch(PISTON_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      language: 'java',
-      version: '*',
-      files: [{ name: 'Main.java', content: code }],
-      stdin,
-    }),
-  });
-  if (!res.ok) throw new Error(`Piston API error: ${res.status}`);
-  const data = await res.json();
-  return {
-    stdout: data.run?.stdout ?? '',
-    stderr: data.run?.stderr ?? '',
-    code:   data.run?.code ?? -1,
-  };
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 25000);
+  try {
+    const res = await fetch(WANDBOX_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ compiler: 'openjdk-head', code, stdin }),
+      signal: controller.signal,
+    });
+    if (!res.ok) throw new Error(`Execution server error: HTTP ${res.status}`);
+    const data = await res.json();
+    return {
+      stdout: data.program_output ?? '',
+      stderr: (data.compiler_message ?? '') + (data.program_error ?? ''),
+      code:   parseInt(data.status ?? '0'),
+    };
+  } catch (err) {
+    if (err.name === 'AbortError') throw new Error('Request timed out — the execution server may be slow');
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function parseJavaError(stderr) {
-  let m = stderr.match(/Main\.java:(\d+):\s*error:\s*(.+)/);
+  let m = stderr.match(/\w+\.java:(\d+):\s*error:\s*(.+)/);
   if (m) return { line: parseInt(m[1]), message: m[2].trim() };
-  m = stderr.match(/at\s+\S+\.main\(Main\.java:(\d+)\)/);
+  m = stderr.match(/at\s+\S+\.main\(\w+\.java:(\d+)\)/);
   const lineNum = m ? parseInt(m[1]) : null;
   const raw = stderr.split('\n')[0]
     .replace(/^Exception in thread "[^"]*"\s*/, '')
@@ -300,8 +305,12 @@ export default function CodeEditor({ starterCode = '', testCases = [], hint = ''
           next.push({ passed: actual === expected, actual, expected, stderr });
         }
       } catch (err) {
-        next.push({ passed: false, error: err.message, stderr: '', actual: '' });
-        setRunError('Could not reach code execution server. Check your connection.');
+        const msg = err.message?.includes('timed out')
+          ? err.message
+          : 'Could not reach the code execution server. The service may be temporarily unavailable.';
+        next.push({ passed: false, error: msg, stderr: '', actual: '' });
+        setRunError(msg);
+        break;
       }
       setResults([...next, ...testCases.slice(i + 1).map(() => null)]);
     }
