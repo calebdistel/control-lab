@@ -1,0 +1,46 @@
+---
+import type { CollectionEntry } from 'astro:content';
+type Props = { lesson: CollectionEntry<'lessons'> };
+const { lesson } = Astro.props;
+const { data } = lesson;
+const trackLabel = {
+  summer: 'Summer · Foundations',
+  fall: 'Fall · Implementation',
+  'supplemental-s1': 'Supplemental · Swerve',
+  'supplemental-s2': 'Supplemental · Vision',
+  'supplemental-s3': 'Supplemental · Auto',
+  'supplemental-s4': 'Supplemental · Advanced Control',
+  'supplemental-s5': 'Supplemental · Tooling',
+}[data.track];
+---
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{data.title} — Control Lab</title>
+</head>
+<body>
+  <header class="lesson-header">
+    <div class="eyebrow">{trackLabel} · Lesson {String(data.lesson).padStart(2, '0')}</div>
+    <h1>{data.title}</h1>
+    <div class="meta">
+      <span>⏱ {data.duration}</span>
+      {data.prereqs.length > 0 && <span>Prereqs: {data.prereqs.join(', ')}</span>}
+      <span>Contributed by {data.contributedBy}</span>
+    </div>
+    <details class="objectives">
+      <summary>By the end of this lesson you will be able to…</summary>
+      <ul>{data.objectives.map(o => <li>{o}</li>)}</ul>
+    </details>
+  </header>
+
+  <main class="lesson-body">
+    <slot />
+  </main>
+
+  <footer class="lesson-footer">
+    <a href="/">← Back to all lessons</a>
+  </footer>
+</body>
+</html>
