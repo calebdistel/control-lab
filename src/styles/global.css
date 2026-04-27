@@ -1,34 +1,163 @@
+@import url('https://fonts.googleapis.com/css2?family=Audiowide&family=Kanit:wght@400;500;600;700&display=swap');
+
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+li { list-style: none; }
+img, video { max-width: 100%; display: block; }
 
 :root {
-  --bg:          #0d1117;
-  --surface:     #161b22;
-  --surface-2:   #1c2129;
-  --border:      #30363d;
-  --text:        #e6edf3;
-  --text-muted:  #8b949e;
-  --text-subtle: #484f58;
-  --accent:      #f97316;
-  --accent-dim:  rgba(249,115,22,0.12);
-  --accent-2:    #ea580c;
-  --sidebar-w:   272px;
-  --content-w:   740px;
-  --r:           6px;
+  /* CobraLink palette */
+  --primary-blue:  #4DC6FF;
+  --primary-white: #FFFFFF;
+  --primary-black: #000000;
+  --light-grey:    #D8DFE7;
+  --dark-grey:     #979CA5;
+  --highlight:     #BFEAFF;
+  --light-shadow:  #3D5A80;
+  --dark-shadow:   #242B40;
+
+  /* Surfaces and tokens */
+  --bg:            var(--primary-black);
+  --surface:       rgba(61,90,128,0.15);
+  --surface-hover: rgba(61,90,128,0.30);
+  --surface-solid: rgba(36,43,64,0.97);
+  --border:        var(--light-shadow);
+  --border-subtle: rgba(255,255,255,0.08);
+  --text:          var(--primary-white);
+  --text-muted:    var(--light-grey);
+  --text-subtle:   var(--dark-grey);
+  --accent:        var(--primary-blue);
+  --accent-hover:  #79d4ff;
+  --accent-dim:    rgba(77,198,255,0.16);
+  --accent-ring:   rgba(77,198,255,0.30);
+
+  /* Layout */
+  --nav-h:       70px;
+  --nav-border:  3px;
+  --nav-uline-h: 4px;
+  --sidebar-w:   280px;
+  --content-w:   760px;
+
+  /* Radii */
+  --r:    12px;
+  --r-sm: 10px;
+  --r-lg: 14px;
+
+  color-scheme: dark;
 }
 
-html { scroll-behavior: smooth; }
-
+html, body { height: 100%; background: var(--bg); }
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
-  background: var(--bg);
+  margin: 0;
   color: var(--text);
-  line-height: 1.7;
+  font-family: "Kanit", system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   font-size: 15px;
+  line-height: 1.7;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 a { color: inherit; text-decoration: none; }
 
-::-webkit-scrollbar { width: 5px; height: 5px; }
+/* CobraLink scrollbar — blue thumb on transparent track */
+* { scrollbar-width: thin; scrollbar-color: var(--accent) transparent; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: var(--text-subtle); }
+::-webkit-scrollbar-thumb {
+  background: var(--accent);
+  border-radius: 5px;
+  background-clip: padding-box;
+  border: 2px solid transparent;
+  transition: border 250ms linear;
+}
+::-webkit-scrollbar-thumb:hover { border-width: 0; }
+
+/* ── Top navbar (CobraLink style) ─────────────────── */
+
+.top-nav {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  height: var(--nav-h);
+  background: rgba(0,0,0,0.85);
+  border-bottom: var(--nav-border) solid var(--dark-grey);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  z-index: 30;
+  display: flex;
+  align-items: center;
+}
+.top-nav::after {
+  content: '';
+  position: absolute; left: 0; right: 0; bottom: -3px;
+  height: var(--nav-uline-h);
+  background: var(--accent);
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 220ms ease;
+}
+.top-nav:hover::after { transform: scaleX(1); }
+
+.top-nav-inner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 0 clamp(12px, 2vw, 24px);
+  gap: 1rem;
+}
+
+.brand-link {
+  display: flex;
+  align-items: center;
+  gap: 0.875rem;
+  height: 100%;
+}
+.brand-mark {
+  font-family: "Audiowide", "Kanit", sans-serif;
+  font-size: 1.05rem;
+  letter-spacing: 0.08em;
+  color: var(--accent);
+  background: var(--accent-dim);
+  border: 1px solid rgba(77,198,255,0.4);
+  padding: 0.3em 0.7em;
+  border-radius: var(--r-sm);
+}
+.brand-text { display: flex; flex-direction: column; line-height: 1.15; }
+.brand-name {
+  font-family: "Audiowide", "Kanit", sans-serif;
+  font-size: 1.15rem;
+  letter-spacing: 0.05em;
+  color: var(--primary-white);
+  text-transform: uppercase;
+}
+.brand-sub {
+  font-family: "Kanit", sans-serif;
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: var(--dark-grey);
+  margin-top: 0.15rem;
+  letter-spacing: 0.02em;
+}
+
+.top-nav-meta {
+  font-family: "Kanit", sans-serif;
+  font-size: 0.78rem;
+  color: var(--light-grey);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.top-nav-meta strong { color: var(--accent); font-weight: 600; }
+
+/* Underline animation utility (matches CobraLink) */
+.underline-animation { position: relative; }
+.underline-animation::after {
+  content: '';
+  position: absolute; left: 0; width: 100%;
+  bottom: -3px;
+  height: var(--nav-uline-h);
+  background: var(--accent);
+  transform: scaleX(0); transform-origin: left;
+  transition: transform 180ms ease-in-out;
+  pointer-events: none;
+}
+.underline-animation:hover::after,
+.underline-animation:focus-visible::after { transform: scaleX(1); }
