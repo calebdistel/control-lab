@@ -104,6 +104,18 @@ function workerUrl() {
   return _workerBlobUrl;
 }
 
+function runDirect(js) {
+  let __buf = '';
+  const __println = (x) => { __buf += (x === null || x === undefined ? 'null' : String(x)) + '\n'; };
+  const __print   = (x) => { __buf += (x === null || x === undefined ? 'null' : String(x)); };
+  try {
+    new Function('__println', '__print', 'Math', js)(__println, __print, Math);
+    return Promise.resolve({ stdout: __buf, stderr: '', code: 0 });
+  } catch (err) {
+    return Promise.resolve({ stdout: __buf, stderr: err.toString(), code: 1 });
+  }
+}
+
 function normalize(s) {
   return String(s ?? '').replace(/\r\n/g, '\n').trim();
 }
@@ -116,8 +128,16 @@ function runCode(javaCode) {
     return Promise.resolve({ stdout: '', stderr: `Transpile error: ${err.message}`, code: 1 });
   }
 
+  // Try Worker first (isolated thread, handles infinite loops via timeout).
+  // Fall back to direct execution if blob Workers are unavailable.
+  let worker;
+  try {
+    worker = new Worker(workerUrl());
+  } catch {
+    return runDirect(js);
+  }
+
   return new Promise(resolve => {
-    const worker = new Worker(workerUrl());
     const timer = setTimeout(() => {
       worker.terminate();
       resolve({ stdout: '', stderr: 'Timed out — check for an infinite loop.', code: 1 });
@@ -131,7 +151,8 @@ function runCode(javaCode) {
     worker.onerror = (e) => {
       clearTimeout(timer);
       worker.terminate();
-      resolve({ stdout: '', stderr: e.message || 'Worker error', code: 1 });
+      // Worker script error — fall back to direct execution
+      runDirect(js).then(resolve);
     };
 
     worker.postMessage({ js });
