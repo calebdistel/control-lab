@@ -1,0 +1,273 @@
+---
+track: control-systems
+lesson: 2
+title: "Bang-Bang Control"
+prereqs: [control-systems-01]
+objectives:
+  - Implement a basic bang-bang controller that switches output based on a threshold
+  - Explain why bang-bang control causes oscillation around the setpoint
+  - Apply hysteresis to reduce oscillation in a bang-bang controller
+  - Identify FRC use cases where bang-bang is appropriate versus where it falls short
+---
+
+import Key from '../../../components/Key.astro';
+import Try from '../../../components/Try.astro';
+import Note from '../../../components/Note.astro';
+import Warn from '../../../components/Warn.astro';
+import CodeTrace from '../../../components/demos/CodeTrace.jsx';
+import Quiz from '../../../components/demos/Quiz.jsx';
+import CodeEditor from '../../../components/demos/CodeEditor.jsx';
+
+## Hook
+
+Imagine you're controlling the temperature of a room with a thermostat that has only two states: heater fully on, or heater fully off. When the room drops below 68°F, the heater kicks on at full blast. The moment it hits 68°F again, the heater shuts off. Then the room cools slightly, the heater kicks back on, shuts off again...
+
+That's bang-bang control. It's been heating homes for a century, and it works well enough for a thermostat. But put it on a high-speed flywheel spinning at 4000 RPM, and the "bang" becomes literal — the system hammers back and forth across the setpoint dozens of times per second. Understanding exactly why this happens, and how to tame it, is the key lesson of this unit.
+
+## Core concept
+
+<Key>
+Bang-bang control outputs the maximum value when below the setpoint and zero (or minimum) when above it. It is the simplest possible closed-loop controller, but it always oscillates. Adding a hysteresis band — a dead zone around the setpoint — reduces oscillation by preventing the controller from switching until the error is large enough to matter.
+</Key>
+
+### Basic bang-bang logic
+
+The decision rule is a single comparison:
+
+```
+if measurement < setpoint:
+    output = FULL_POWER
+else:
+    output = OFF
+```
+
+In Java:
+
+```java
+public double calculate(double measurement, double setpoint) {
+    if (measurement < setpoint) {
+        return 1.0;  // full forward
+    } else {
+        return 0.0;  // off
+    }
+}
+```
+
+That's the entire controller. No multiplication, no accumulation, just a comparison.
+
+### Why bang-bang always oscillates
+
+Consider a flywheel targeted at 3000 RPM. Here's what happens each loop cycle (every 20 ms):
+
+| Loop | RPM | Decision | What happens next |
+|------|-----|----------|------------------|
+| 1 | 2950 | FULL ON | Motor accelerates |
+| 2 | 3005 | OFF | Motor begins to decelerate |
+| 3 | 2998 | FULL ON | Motor accelerates again |
+| 4 | 3002 | OFF | Decelerates again |
+
+The flywheel never settles at 3000 RPM. It oscillates around the setpoint continuously. The amplitude of the oscillation depends on:
+
+- **Inertia** — a heavy flywheel carries more momentum past the setpoint before the next loop sample
+- **Loop period** — at 20 ms per loop, a fast mechanism may change dramatically between samples
+- **Full output power** — if FULL_POWER is very large relative to what the mechanism needs, the overshoot per step is large
+
+The system is never actually "at" the setpoint; it is always bouncing above and below it. For a thermostat that takes minutes to change temperature, the oscillation is imperceptibly small. For a motor that changes speed in milliseconds, the oscillation is significant.
+
+### Hysteresis: adding a dead band
+
+The fix is to stop toggling so aggressively. Instead of switching exactly at the setpoint, define two thresholds:
+
+- **Lower threshold**: turn ON when measurement drops this far below setpoint
+- **Upper threshold**: turn OFF when measurement rises this far above setpoint
+
+```
+lower_threshold = setpoint - hysteresis
+upper_threshold = setpoint + hysteresis
+
+if measurement < lower_threshold:
+    output = FULL_POWER
+elif measurement > upper_threshold:
+    output = OFF
+// else: keep whatever state we were in (no change)
+```
+
+The key insight is the "else: no change" branch. Once we're inside the band, we don't switch at all. This means the controller has memory — it needs to know its previous state.
+
+```java
+public class BangBangController {
+    private final double hysteresis;
+    private double lastOutput = 0.0;
+
+    public BangBangController(double hysteresis) {
+        this.hysteresis = hysteresis;
+    }
+
+    public double calculate(double measurement, double setpoint) {
+        if (measurement < setpoint - hysteresis) {
+            lastOutput = 1.0; // below band — turn on
+        } else if (measurement > setpoint + hysteresis) {
+            lastOutput = 0.0; // above band — turn off
+        }
+        // inside the band: lastOutput unchanged
+        return lastOutput;
+    }
+}
+```
+
+With a hysteresis of 50 RPM around a 3000 RPM setpoint:
+- Turns ON if speed falls below 2950 RPM
+- Turns OFF if speed rises above 3050 RPM
+- Does nothing if speed is between 2950 and 3050 RPM
+
+The flywheel settles into a steady oscillation between 2950 and 3050 — a 100 RPM band. That's far better than switching every loop cycle.
+
+<Note>
+WPILib includes a BangBangController class (edu.wpi.first.math.controller.BangBangController) that implements this pattern. It takes the measurement and setpoint in calculate() and uses a configurable tolerance. For competition code, prefer the WPILib version over a hand-rolled one.
+</Note>
+
+### FRC applications where bang-bang is appropriate
+
+**1. Pneumatic compressor**
+
+The robot's air compressor is the canonical bang-bang controller in FRC. The compressor fills the tank until pressure reaches ~120 PSI (upper threshold), then shuts off. When pressure drops below ~100 PSI (lower threshold), it kicks back on. The pressure oscillates between 100 and 120 PSI — that's fine, because solenoids work across that entire range.
+
+```java
+// WPILib handles this automatically with Compressor class
+// You don't write this yourself, but internally it's bang-bang
+Compressor compressor = new Compressor(PneumaticsModuleType.CTREPCM);
+compressor.enableDigital(); // automatic bang-bang based on pressure switch
+```
+
+**2. Simple intake speed limiter**
+
+An intake roller that needs to be "on" or "off" doesn't need proportional control. If you want exactly full speed, bang-bang is trivially correct — full on at zero RPM, keeps running.
+
+**3. Soft travel limits**
+
+If an arm is approaching a hard stop and you want to cut power before it hits, a bang-bang style "if past limit, cut power" is appropriate and simpler than a full PID.
+
+### Where bang-bang falls short
+
+Bang-bang is a poor choice when:
+
+- **Precision matters**: a shooter that alternates between 2950 and 3050 RPM will have measurable shot-to-shot variance
+- **Smooth motion is required**: arms and elevators driven by bang-bang will jerk and chatter rather than moving smoothly
+- **The mechanism is slow-moving**: bang-bang assumes the mechanism can keep up with switching. An elevator that responds slowly to motor commands will overshoot significantly before the sensor catches up
+
+<Warn>
+Never use bang-bang control on arms or elevators in competition robots. The constant switching causes mechanical stress (motors reversing abruptly, gearboxes experiencing shock loads) and the oscillation can look like a mechanism fault to inspectors. Use PID for anything that needs to hold a position smoothly.
+</Warn>
+
+### Comparing bang-bang to what comes next
+
+| Property | Bang-Bang | Proportional (next lesson) |
+|---|---|---|
+| Output values | Binary (full / off) | Continuous (proportional to error) |
+| Steady-state behavior | Always oscillates | Small steady-state error |
+| Implementation complexity | Very simple | Simple |
+| Handles setpoint changes | Poorly (full blast) | Gracefully |
+| Good FRC uses | Compressor, hard limits | Shooters, velocity loops |
+
+## Key takeaways
+
+- Bang-bang control is a binary feedback loop: full power below the setpoint, off above it.
+- It always oscillates because the output switches every time the measurement crosses the setpoint.
+- Hysteresis introduces a dead band around the setpoint, preventing switching until the error exceeds a threshold. The controller holds its last state inside the band.
+- Appropriate FRC uses: compressor pressure control, hard stop limiters, simple on/off mechanisms.
+- Inappropriate uses: any mechanism that needs to hold a precise value or move smoothly.
+
+## Common confusions
+
+**"My bang-bang controller with hysteresis still oscillates a lot."**
+
+Make the hysteresis band wider. If you're oscillating every 5 loop cycles, the band is too narrow for the mechanism's inertia. Try doubling the hysteresis and observing whether the oscillation frequency drops. There's a tradeoff: wider band means more variance in the controlled variable.
+
+**"The controller turned on but now it won't turn off even though we're above the setpoint."**
+
+Check that `lastOutput` is initialized correctly, and verify that your upper threshold is actually being exceeded. Log `measurement`, `setpoint + hysteresis`, and `lastOutput` to Shuffleboard to see what the controller sees each loop.
+
+**"Why does WPILib's BangBangController not have hysteresis built in?"**
+
+WPILib's implementation uses tolerance instead of a band — it withholds output when within tolerance of the setpoint rather than using a two-threshold approach. Read the WPILib docs for your version; the API may differ slightly. The concept is identical.
+
+**"Is bang-bang actually closed-loop? It seems too simple."**
+
+Yes, it is genuinely closed-loop — it reads a sensor (measurement), compares to a setpoint, and adjusts output based on the error. The fact that the output is binary doesn't make it open-loop. Open-loop means no sensor feedback at all.
+
+## Challenge
+
+<Try>
+Implement a bang-bang controller with hysteresis. The controller should:
+- Return 1.0 (full power) when measurement is below (setpoint - hysteresis)
+- Return 0.0 (off) when measurement is above (setpoint + hysteresis)
+- Return the previous output when inside the band
+
+Test it with: setpoint = 3000 RPM, hysteresis = 100 RPM, starting at 2800 RPM, then check behavior at 2905 RPM (inside band from below), then at 3110 RPM (above band).
+</Try>
+
+<CodeEditor
+  client:load
+  starterCode={`public class BangBangController {
+    private double hysteresis;
+    private double lastOutput;
+
+    public BangBangController(double hysteresis) {
+        this.hysteresis = hysteresis;
+        this.lastOutput = 0.0;
+    }
+
+    public double calculate(double measurement, double setpoint) {
+        // TODO: implement hysteresis bang-bang logic
+        // Hint: check if measurement < setpoint - hysteresis
+        //       or if measurement > setpoint + hysteresis
+        //       otherwise return lastOutput unchanged
+        return lastOutput;
+    }
+
+    public static void main(String[] args) {
+        BangBangController controller = new BangBangController(100.0);
+        double setpoint = 3000.0;
+
+        // Step 1: start at 2800 RPM (below band)
+        double out1 = controller.calculate(2800.0, setpoint);
+        System.out.println("At 2800 RPM: output = " + out1);
+
+        // Step 2: now at 2905 RPM (inside band, was previously below)
+        double out2 = controller.calculate(2905.0, setpoint);
+        System.out.println("At 2905 RPM: output = " + out2);
+
+        // Step 3: now at 3110 RPM (above band)
+        double out3 = controller.calculate(3110.0, setpoint);
+        System.out.println("At 3110 RPM: output = " + out3);
+
+        // Step 4: back to 2905 RPM (inside band, was previously above)
+        double out4 = controller.calculate(2905.0, setpoint);
+        System.out.println("At 2905 RPM again: output = " + out4);
+    }
+}`}
+  testCases={[
+    { label: "2800 RPM triggers full power", expected: "At 2800 RPM: output = 1.0" },
+    { label: "2905 RPM inside band holds 1.0", expected: "At 2905 RPM: output = 1.0" },
+    { label: "3110 RPM above band turns off", expected: "At 3110 RPM: output = 0.0" },
+    { label: "2905 RPM inside band holds 0.0", expected: "At 2905 RPM again: output = 0.0" }
+  ]}
+  hint="Store the result in lastOutput before returning it. Only update lastOutput when outside the band."
+/>
+
+<Quiz
+  client:load
+  question="A bang-bang compressor controller has a lower threshold of 90 PSI and an upper threshold of 115 PSI. The compressor is currently OFF and pressure is 102 PSI. What does the controller do?"
+  options={[
+    "Turns the compressor ON because pressure is below 115 PSI",
+    "Keeps the compressor OFF because pressure is inside the hysteresis band",
+    "Turns the compressor ON because pressure dropped below 115 PSI",
+    "Turns the compressor OFF because pressure is above 90 PSI"
+  ]}
+  correct={1}
+  explanation="The pressure (102 PSI) is between 90 and 115 PSI — inside the hysteresis band. With hysteresis, the controller holds its last state, which was OFF. It only turns ON again if pressure drops below 90 PSI."
+/>
+
+## What's next
+
+Bang-bang's biggest problem is that it can only command full power or no power — there's no middle ground. The next lesson introduces proportional control, where the output is continuously scaled by the size of the error. Big error gets a big correction; small error gets a small nudge. This eliminates the hard switching and gives much smoother control — though as you'll see, it introduces its own tradeoff: a small but persistent steady-state error.

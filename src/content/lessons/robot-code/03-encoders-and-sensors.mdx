@@ -1,0 +1,372 @@
+---
+track: robot-code
+lesson: 3
+title: Encoders and Sensors
+prereqs: [robot-code-02]
+objectives:
+  - Explain the difference between relative and absolute encoders and when to use each
+  - Instantiate and read from a WPILib Encoder, DutyCycleEncoder, DigitalInput, and AnalogInput
+  - Convert raw encoder ticks to real-world units using gear ratio and wheel circumference
+  - Read velocity from an encoder and convert to meaningful units (RPM, inches per second)
+  - Describe how a limit switch is used to bound mechanism travel
+---
+
+import Key from '../../../components/Key.astro';
+import Try from '../../../components/Try.astro';
+import Note from '../../../components/Note.astro';
+import Warn from '../../../components/Warn.astro';
+import CodeTrace from '../../../components/demos/CodeTrace.jsx';
+import Quiz from '../../../components/demos/Quiz.jsx';
+import CodeEditor from '../../../components/demos/CodeEditor.jsx';
+
+## Hook
+
+Your robot arm can move, but it has no idea where it is. Every time the robot reboots, the arm might be at 0°, 45°, or fully extended against a hard stop. You can't run an autonomous routine that moves the arm to a precise angle if you don't know its starting position.
+
+Sensors change everything. They give the robot a model of its own state — where it is, how fast it's moving, what it's touching. Without sensors, you're flying blind. With them, you can write code that actually closes the loop between intention and reality.
+
+## Core concept
+
+<Key>
+An encoder converts mechanical rotation into electrical pulses your code can count. From those counts you can derive position (how far something has moved) and velocity (how fast it's moving right now). Absolute encoders also tell you position after a power cycle — relative encoders do not.
+</Key>
+
+## Relative vs absolute encoders
+
+**Relative (incremental) encoders** count pulses from zero. Zero is wherever the encoder was when the robot powered on. Rotate forward — count goes up. Rotate backward — count goes down. If you restart the robot, the count resets to zero regardless of where the mechanism physically is.
+
+**Absolute encoders** output a value tied to a fixed physical reference — usually a 0–360° range mapped to a 0–5V signal or a duty-cycle pulse. They always know their absolute position, even after a power cycle, because they don't count pulses; they measure a unique electrical signature for each angle.
+
+| | Relative (Quadrature) | Absolute (Duty-Cycle) |
+|---|---|---|
+| After power cycle | Resets to 0 | Retains true position |
+| Resolution | Very high (2048 ticks/rev) | Moderate (4096 counts typical) |
+| Common FRC example | TalonFX built-in, SPARK MAX encoder | REV Through Bore, CTRE CANcoder |
+| WPILib class | `Encoder` | `DutyCycleEncoder` |
+| Typical use | Drivetrain distance, velocity PID | Arm angles, swerve module azimuth |
+
+## WPILib `Encoder` (quadrature, relative)
+
+`edu.wpi.first.wpilibj.Encoder` reads a two-channel quadrature encoder wired to DIO ports on the roboRIO.
+
+```java
+import edu.wpi.first.wpilibj.Encoder;
+
+// DIO channel A = 0, DIO channel B = 1
+private final Encoder driveEncoder = new Encoder(0, 1);
+
+// In the constructor — set distance per pulse
+// wheel circumference (inches) / ticks per revolution
+// Example: 6-inch wheel, 2048 ticks/rev
+driveEncoder.setDistancePerPulse((Math.PI * 6.0) / 2048.0);
+
+// Reading position (in inches, because of setDistancePerPulse)
+double distanceInches = driveEncoder.getDistance();
+
+// Reading velocity (inches per second)
+double velocityIPS = driveEncoder.getRate();
+
+// Resetting to zero
+driveEncoder.reset();
+```
+
+The two-channel (A and B) wiring lets the encoder detect direction. Channel A leads channel B going forward; B leads A going backward.
+
+<Note>
+If `getDistance()` increases when you expect it to decrease, pass `true` as the third constructor argument to reverse the counting direction: `new Encoder(0, 1, true)`. This is cleaner than negating downstream.
+</Note>
+
+## WPILib `DutyCycleEncoder` (absolute)
+
+`edu.wpi.first.wpilibj.DutyCycleEncoder` reads an encoder that encodes position as a duty cycle on a single DIO wire (like the REV Through Bore Encoder or the CTRE CANcoder in PWM mode).
+
+```java
+import edu.wpi.first.wpilibj.DutyCycleEncoder;
+
+// DIO channel 2
+private final DutyCycleEncoder armEncoder = new DutyCycleEncoder(2);
+
+// Optional: set the range to a full rotation (1.0 = one full revolution)
+armEncoder.setDistancePerRotation(360.0); // now getDistance() returns degrees
+
+// Reading absolute position (0–360 degrees after setDistancePerRotation)
+double angleDegrees = armEncoder.getDistance();
+
+// Check if the encoder is connected and returning valid data
+boolean isConnected = armEncoder.isConnected();
+```
+
+**Zero offset** — the encoder's physical zero may not align with your mechanism's zero. Measure the raw value when the arm is at your desired zero position, then subtract it:
+
+```java
+private static final double ARM_ENCODER_ZERO_OFFSET = 0.247; // measured at arm's home position
+
+public double getArmAngleDegrees() {
+    return (armEncoder.getAbsolutePosition() - ARM_ENCODER_ZERO_OFFSET) * 360.0;
+}
+```
+
+## Built-in motor controller encoders
+
+Both SPARK MAX and TalonSRX/TalonFX expose encoder data through their own APIs — no separate WPILib `Encoder` object needed.
+
+**SPARK MAX (REV):**
+
+```java
+import com.revrobotics.RelativeEncoder;
+
+private final CANSparkMax motor = new CANSparkMax(5, MotorType.kBrushless);
+private final RelativeEncoder encoder = motor.getEncoder();
+
+// In constructor: set conversion factors
+// NEO has 42 counts per revolution internal (getEncoder() already returns rotations by default)
+// Convert to degrees for an arm with a 100:1 gear reduction
+encoder.setPositionConversionFactor(360.0 / 100.0); // motor rotations → arm degrees
+encoder.setVelocityConversionFactor(360.0 / 100.0 / 60.0); // RPM → degrees per second
+
+double armDegrees = encoder.getPosition();
+double armDegPerSec = encoder.getVelocity();
+
+// Reset to zero
+encoder.setPosition(0.0);
+```
+
+**TalonFX (Falcon 500 / Kraken X60):**
+
+```java
+import com.ctre.phoenix6.hardware.TalonFX;
+import com.ctre.phoenix6.signals.NeutralModeValue;
+
+private final TalonFX falcon = new TalonFX(6); // Phoenix 6 API
+
+// Position in rotations
+double rotations = falcon.getPosition().getValueAsDouble();
+
+// Velocity in rotations per second
+double rotPerSec = falcon.getVelocity().getValueAsDouble();
+```
+
+## Gear ratio and unit conversion
+
+The encoder measures *motor* rotation. The mechanism moves at a different rate determined by the gear ratio. This is the single most common source of unit-conversion bugs.
+
+```
+Mechanism position = Motor position / Gear ratio
+```
+
+For a drivetrain wheel:
+
+```java
+private static final double GEAR_RATIO = 8.45;          // motor turns per wheel turn
+private static final double WHEEL_DIAMETER_METERS = 0.1524; // 6-inch wheel
+private static final double WHEEL_CIRCUMFERENCE = Math.PI * WHEEL_DIAMETER_METERS;
+
+// TalonFX returns rotations
+public double getDistanceMeters() {
+    double motorRotations = falcon.getPosition().getValueAsDouble();
+    double wheelRotations = motorRotations / GEAR_RATIO;
+    return wheelRotations * WHEEL_CIRCUMFERENCE;
+}
+
+public double getVelocityMetersPerSecond() {
+    double motorRPS = falcon.getVelocity().getValueAsDouble();
+    double wheelRPS = motorRPS / GEAR_RATIO;
+    return wheelRPS * WHEEL_CIRCUMFERENCE;
+}
+```
+
+It helps to label your constants explicitly — include units in the name (`_METERS`, `_DEGREES`, `_INCHES`) so future readers (including you at 11pm before a competition) know exactly what they're looking at.
+
+## `DigitalInput`: limit switches
+
+A limit switch is a digital sensor: either open (1) or closed (0). In FRC, limit switches are wired to DIO ports and read with `DigitalInput`.
+
+```java
+import edu.wpi.first.wpilibj.DigitalInput;
+
+private final DigitalInput lowerLimit = new DigitalInput(3);  // DIO port 3
+private final DigitalInput upperLimit = new DigitalInput(4);  // DIO port 4
+
+public boolean isAtLowerLimit() {
+    return !lowerLimit.get(); // normally-open switches read true when open; invert for "is pressed"
+}
+
+public boolean isAtUpperLimit() {
+    return !upperLimit.get();
+}
+```
+
+Use limit switches to:
+- Zero a relative encoder when the mechanism reaches a known hard stop
+- Prevent a command from driving a mechanism past its physical limits
+
+```java
+public void moveUp(double speed) {
+    if (isAtUpperLimit()) {
+        motor.set(0.0);  // refuse to move further
+    } else {
+        motor.set(speed);
+    }
+}
+```
+
+<Warn>
+Normally-open vs normally-closed wiring matters. A normally-open switch reads `false` when pressed (circuit closed). Many teams use normally-closed for safety: if the wire is cut or the switch fails, the robot sees the switch as "triggered" and stops. This is called fail-safe behavior.
+</Warn>
+
+## `AnalogInput`: potentiometers
+
+A potentiometer outputs a voltage proportional to its rotation angle — useful for mechanisms where an absolute position is needed cheaply. It's read via the roboRIO's analog input ports.
+
+```java
+import edu.wpi.first.wpilibj.AnalogInput;
+
+private final AnalogInput potentiometer = new AnalogInput(0); // Analog port 0
+
+// Raw voltage: 0–5V
+double voltage = potentiometer.getVoltage();
+
+// Map voltage to angle (example: 0V = 0°, 5V = 270°)
+public double getAngleDegrees() {
+    return potentiometer.getVoltage() * (270.0 / 5.0);
+}
+```
+
+Potentiometers are simpler and cheaper than absolute encoders but less precise and prone to wear. Use them for mechanisms with limited range of motion (like an arm that only swings 120°).
+
+## Putting it together: ArmSubsystem with encoder
+
+```java
+import edu.wpi.first.wpilibj.DutyCycleEncoder;
+import edu.wpi.first.wpilibj.DigitalInput;
+import edu.wpi.first.wpilibj2.command.SubsystemBase;
+import com.revrobotics.CANSparkMax;
+import com.revrobotics.CANSparkMaxLowLevel.MotorType;
+import edu.wpi.first.wpilibj.smartdashboard.SmartDashboard;
+
+public class ArmSubsystem extends SubsystemBase {
+
+    private static final double ZERO_OFFSET_ROTATIONS = 0.247;
+
+    private final CANSparkMax motor = new CANSparkMax(10, MotorType.kBrushless);
+    private final DutyCycleEncoder absoluteEncoder = new DutyCycleEncoder(2);
+    private final DigitalInput lowerLimit = new DigitalInput(3);
+
+    public ArmSubsystem() {
+        motor.setIdleMode(CANSparkMax.IdleMode.kBrake);
+        motor.setSmartCurrentLimit(30);
+        absoluteEncoder.setDistancePerRotation(360.0);
+    }
+
+    /** Returns arm angle in degrees, 0 = horizontal */
+    public double getAngleDegrees() {
+        return (absoluteEncoder.getAbsolutePosition() - ZERO_OFFSET_ROTATIONS) * 360.0;
+    }
+
+    public boolean isAtLowerLimit() {
+        return !lowerLimit.get();
+    }
+
+    public void setSpeed(double speed) {
+        // Never drive into the lower limit
+        if (speed < 0 && isAtLowerLimit()) {
+            motor.set(0.0);
+            return;
+        }
+        motor.set(speed);
+    }
+
+    @Override
+    public void periodic() {
+        SmartDashboard.putNumber("Arm/angleDeg",  getAngleDegrees());
+        SmartDashboard.putBoolean("Arm/lowerLimit", isAtLowerLimit());
+    }
+}
+```
+
+<CodeTrace
+  client:load
+  variables={{ armDeg: "0.0", lowerLimit: "false", motorOut: "0.0" }}
+  steps={[
+    { code: "setSpeed(0.3)",           state: { armDeg: "0.0",  lowerLimit: "false", motorOut: "0.3"  }, comment: "arm moving up" },
+    { code: "periodic() — encoder read", state: { armDeg: "22.5", lowerLimit: "false", motorOut: "0.3"  }, comment: "angle updating" },
+    { code: "periodic() — encoder read", state: { armDeg: "45.0", lowerLimit: "false", motorOut: "0.3"  }, comment: "still climbing" },
+    { code: "setSpeed(-0.3)",          state: { armDeg: "45.0", lowerLimit: "false", motorOut: "-0.3" }, comment: "arm moving down" },
+    { code: "lower limit switch triggers", state: { armDeg: "2.1",  lowerLimit: "true",  motorOut: "-0.3" }, comment: "limit hit" },
+    { code: "setSpeed(-0.3) — limit check", state: { armDeg: "2.1", lowerLimit: "true", motorOut: "0.0"  }, comment: "motor stopped by safety check" },
+  ]}
+/>
+
+## Key takeaways
+
+- Relative encoders reset on power cycle. Absolute encoders retain position. Use absolute encoders for mechanisms that must know their position after a reboot.
+- `Encoder` (quadrature) reads DIO channels A and B. `DutyCycleEncoder` reads a single duty-cycle DIO channel.
+- Always set `setDistancePerPulse` or conversion factors so your code works in real units, not raw ticks.
+- Gear ratio is the critical multiplier between motor rotation and mechanism movement — get it right.
+- Limit switches provide hard boundaries. Wire them normally-closed for fail-safe behavior.
+- Potentiometers are a cheap absolute position option for limited-travel mechanisms.
+
+## Common confusions
+
+**"My encoder distance is negative when I expect positive."** The encoder is counting in the wrong direction. Reverse it in the constructor (`new Encoder(0, 1, true)`) or negate `getDistance()` — but do it once in the accessor, not scattered through your code.
+
+**"My absolute encoder reads a wildly different value after I re-zero the robot."** The `getAbsolutePosition()` range is 0–1 (full rotation). If your mechanism is at, say, 0.98 rotations and your offset is 0.05, you'll get –0.07, which wraps. Wrap the result: `((raw - offset) % 1.0 + 1.0) % 1.0` keeps it in [0, 1].
+
+**"My velocity reading is noisy and jumpy."** Velocity is calculated from pulse timing. At low speeds, there are few pulses per period and measurement noise is high. Some teams apply a low-pass filter or use the built-in averaging on TalonFX/SPARK MAX which runs at 1 kHz internally. 
+
+**"I set the distance per pulse but `getDistance()` is still in ticks."** Make sure you called `setDistancePerPulse()` in the constructor *before* reading the encoder. The default scale is 1.0 (tick = distance unit), so if you forget, you're reading raw ticks.
+
+## Challenge
+
+<Try>
+Write a pure-Java method `ticksToInches` that converts raw encoder ticks to inches, given the wheel diameter in inches, the encoder resolution (ticks per motor revolution), and the gear ratio (motor turns per wheel turn). Test it with three cases matching real FRC hardware.
+</Try>
+
+<CodeEditor
+  client:load
+  starterCode={`public class EncoderMath {
+
+    /**
+     * Convert raw encoder ticks to inches of wheel travel.
+     *
+     * @param ticks         raw pulse count from the encoder
+     * @param ticksPerRev   encoder resolution in ticks per motor revolution
+     * @param gearRatio     motor revolutions per wheel revolution
+     * @param wheelDiameterInches  wheel outer diameter in inches
+     * @return distance in inches
+     */
+    public static double ticksToInches(int ticks, int ticksPerRev,
+                                       double gearRatio, double wheelDiameterInches) {
+        // TODO: implement the conversion
+        return 0.0;
+    }
+
+    public static void main(String[] args) {
+        // Case 1: 2048-tick encoder, 8.45:1 gearbox, 6-inch wheel
+        // One full wheel revolution = 2048 * 8.45 = 17,305.6 ticks
+        // Distance for 17306 ticks should be ~6π ≈ 18.85 inches
+        double d1 = ticksToInches(17306, 2048, 8.45, 6.0);
+        System.out.printf("Case 1 (expect ~18.85 in): %.2f in%n", d1);
+
+        // Case 2: 42-count NEO encoder (via SPARK MAX), 10:1 box, 4-inch wheel
+        // One wheel rev = 42 * 10 = 420 ticks
+        // 420 ticks should be ~4π ≈ 12.57 inches
+        double d2 = ticksToInches(420, 42, 10.0, 4.0);
+        System.out.printf("Case 2 (expect ~12.57 in): %.2f in%n", d2);
+
+        // Case 3: zero ticks → zero inches
+        double d3 = ticksToInches(0, 2048, 8.45, 6.0);
+        System.out.printf("Case 3 (expect 0.00 in): %.2f in%n", d3);
+    }
+}`}
+  testCases={[
+    { label: "Case 1: 17306 ticks → ~18.85 inches", expected: "Case 1 (expect ~18.85 in): 18.85 in" },
+    { label: "Case 2: 420 ticks → ~12.57 inches",   expected: "Case 2 (expect ~12.57 in): 12.57 in" },
+    { label: "Case 3: 0 ticks → 0.00 inches",        expected: "Case 3 (expect 0.00 in): 0.00 in" },
+  ]}
+  hint="wheelRotations = ticks / (ticksPerRev * gearRatio). Then multiply by Math.PI * wheelDiameterInches. The gear ratio multiplies the ticks because the motor must turn gearRatio times for the wheel to turn once."
+/>
+
+## What's next
+
+In **Robot Code Lesson 04** we'll leave motors behind and explore a completely different actuation system: pneumatics. You'll learn how compressors, solenoids, and cylinders work, and how to control them using the WPILib `Solenoid` and `DoubleSolenoid` classes — including the safety practices that keep everyone on the drive team safe during mechanical work.

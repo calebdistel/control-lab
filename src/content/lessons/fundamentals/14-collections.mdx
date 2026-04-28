@@ -1,0 +1,450 @@
+---
+track: fundamentals
+lesson: 14
+title: Collections
+prereqs: [fundamentals-13]
+objectives:
+  - Explain why ArrayList is preferred over arrays when the number of elements is not known in advance
+  - Add, remove, and iterate over elements in an ArrayList
+  - Store and retrieve values in a HashMap using string keys
+  - Choose between an array, ArrayList, and HashMap given a specific FRC programming scenario
+  - Use a for-each loop and an iterator to process every element in a collection
+---
+
+import Key from '../../../components/Key.astro';
+import Try from '../../../components/Try.astro';
+import Note from '../../../components/Note.astro';
+import Warn from '../../../components/Warn.astro';
+import CodeTrace from '../../../components/demos/CodeTrace.jsx';
+import Quiz from '../../../components/demos/Quiz.jsx';
+import CodeEditor from '../../../components/demos/CodeEditor.jsx';
+
+## Hook
+
+Your team wants a selector on the dashboard for autonomous routines. Right now there are four. Next week, someone adds two more. The week after that, one gets cut.
+
+If you stored them in an array you'd be editing array sizes and indices every time. Miss one and you get an `ArrayIndexOutOfBoundsException` at the worst possible moment.
+
+Java's collection classes solve this. An `ArrayList` grows and shrinks as you add and remove items — no size to manage. A `HashMap` lets you look up a command by name instead of guessing its index. These two data structures cover the majority of what you'll need to organize robot data.
+
+## Core concept
+
+<Key>
+**Collections** are objects that hold groups of other objects. `ArrayList` is a resizable list — use it when you need an ordered sequence whose length can change. `HashMap` is a key-to-value lookup table — use it when you need to find something by name or ID. Both live in `java.util` and work with any object type through generics.
+</Key>
+
+## Walk-through: ArrayList
+
+### The problem with arrays
+
+A regular array has a fixed size set at creation time:
+
+```java
+String[] routines = new String[4];
+routines[0] = "DriveForward";
+routines[1] = "ScoreThenDrive";
+routines[2] = "TwoPiece";
+routines[3] = "ThreePiece";
+// Need to add a fifth? Declare a new array[5] and copy everything over. Painful.
+```
+
+### Creating and using ArrayList
+
+`ArrayList` handles resizing automatically:
+
+```java
+import java.util.ArrayList;
+
+ArrayList<String> routines = new ArrayList<>();
+
+routines.add("DriveForward");
+routines.add("ScoreThenDrive");
+routines.add("TwoPiece");
+routines.add("ThreePiece");
+
+System.out.println("Size: " + routines.size());      // 4
+System.out.println("Index 2: " + routines.get(2));   // TwoPiece
+```
+
+The `<String>` in `ArrayList<String>` is the **type parameter** — it tells the compiler "this list holds Strings." The compiler will reject any attempt to add a non-String. This is called **generics**.
+
+### Common ArrayList methods
+
+```java
+routines.add("Defense");           // append to the end
+routines.add(0, "DoNothing");      // insert at index 0, shifting everything right
+routines.remove("TwoPiece");       // remove by value (first occurrence)
+routines.remove(1);                // remove by index
+boolean has = routines.contains("DriveForward");  // true/false membership check
+int idx = routines.indexOf("Defense");            // index of first match, or -1
+routines.clear();                  // remove all elements
+System.out.println(routines.isEmpty());           // true after clear()
+```
+
+### Iterating: for-each loop
+
+```java
+ArrayList<String> routines = new ArrayList<>();
+routines.add("DriveForward");
+routines.add("ScoreThenDrive");
+routines.add("ThreePiece");
+
+for (String r : routines) {
+    System.out.println("Routine: " + r);
+}
+```
+
+Output:
+```
+Routine: DriveForward
+Routine: ScoreThenDrive
+Routine: ThreePiece
+```
+
+The for-each loop visits every element in order and is the preferred way to read a list when you don't need the index.
+
+### Iterating: indexed for loop
+
+Use this when you need the index alongside the value, or when you're modifying the list mid-loop:
+
+```java
+for (int i = 0; i < routines.size(); i++) {
+    System.out.println(i + ": " + routines.get(i));
+}
+```
+
+<Warn>
+Do not add or remove elements from an ArrayList while iterating over it with a for-each loop. This throws a `ConcurrentModificationException`. If you need to remove items while iterating, use an `Iterator` or collect the items to remove into a separate list and remove them afterward.
+</Warn>
+
+### Filtering with ArrayList: building a new list
+
+A common pattern is to start with one list and produce a filtered copy:
+
+```java
+ArrayList<Integer> speeds = new ArrayList<>();
+speeds.add(15);
+speeds.add(-3);
+speeds.add(40);
+speeds.add(-12);
+speeds.add(7);
+
+ArrayList<Integer> positiveSpeeds = new ArrayList<>();
+for (int s : speeds) {
+    if (s > 0) {
+        positiveSpeeds.add(s);
+    }
+}
+
+System.out.println("Positive: " + positiveSpeeds);  // [15, 40, 7]
+```
+
+### FRC context: storing auto routines
+
+```java
+import java.util.ArrayList;
+import edu.wpi.first.wpilibj.smartdashboard.SendableChooser;
+import edu.wpi.first.wpilibj2.command.Command;
+
+public class AutoSelector {
+
+    private final ArrayList<String> routineNames = new ArrayList<>();
+    private final SendableChooser<String> chooser  = new SendableChooser<>();
+
+    public void addRoutine(String name) {
+        routineNames.add(name);
+        chooser.addOption(name, name);
+    }
+
+    public void logAll() {
+        System.out.println("Available routines (" + routineNames.size() + "):");
+        for (String name : routineNames) {
+            System.out.println("  - " + name);
+        }
+    }
+}
+```
+
+Adding a new autonomous routine is now a single `addRoutine(...)` call — no array sizes to touch.
+
+---
+
+## Walk-through: HashMap
+
+### What a HashMap does
+
+`HashMap` stores pairs of **keys** and **values**. Given a key, it returns the corresponding value in constant time — like a dictionary or a phonebook.
+
+```java
+import java.util.HashMap;
+
+HashMap<String, Integer> buttonBindings = new HashMap<>();
+buttonBindings.put("A",      1);   // A button → command ID 1
+buttonBindings.put("B",      2);
+buttonBindings.put("Start",  3);
+buttonBindings.put("Select", 4);
+
+int id = buttonBindings.get("B");          // 2
+System.out.println("B button → command " + id);
+```
+
+The type parameters `<String, Integer>` mean "keys are Strings, values are Integers."
+
+### Common HashMap methods
+
+```java
+buttonBindings.put("X", 5);                // add or update
+buttonBindings.remove("Select");           // remove by key
+boolean has = buttonBindings.containsKey("Start");   // true
+int size = buttonBindings.size();          // number of pairs
+
+// Safe get — returns a default if the key doesn't exist
+int cmd = buttonBindings.getOrDefault("Y", -1);  // -1 if "Y" not found
+```
+
+<Note>
+`get()` returns `null` if the key doesn't exist. Calling a method on that `null` gives you a `NullPointerException`. Use `getOrDefault()` or check `containsKey()` before calling `get()` — this is exactly the defensive coding from Lesson 13 applied to collections.
+</Note>
+
+### Iterating a HashMap
+
+```java
+// Iterate over all key-value pairs
+for (HashMap.Entry<String, Integer> entry : buttonBindings.entrySet()) {
+    System.out.println(entry.getKey() + " → " + entry.getValue());
+}
+
+// Iterate over just the keys
+for (String key : buttonBindings.keySet()) {
+    System.out.println(key);
+}
+
+// Iterate over just the values
+for (int value : buttonBindings.values()) {
+    System.out.println(value);
+}
+```
+
+`HashMap` does **not** guarantee iteration order. If you need keys in sorted order, use `TreeMap` instead. For insertion order, use `LinkedHashMap`.
+
+### FRC context: button name to Command
+
+```java
+import java.util.HashMap;
+import edu.wpi.first.wpilibj2.command.Command;
+import edu.wpi.first.wpilibj2.command.PrintCommand;
+
+public class CommandRegistry {
+
+    private final HashMap<String, Command> commands = new HashMap<>();
+
+    public void register(String name, Command command) {
+        commands.put(name, command);
+    }
+
+    public void run(String name) {
+        Command cmd = commands.getOrDefault(name, null);
+        if (cmd == null) {
+            System.out.println("No command named: " + name);
+            return;
+        }
+        cmd.schedule();
+    }
+}
+
+// Usage in RobotContainer:
+CommandRegistry registry = new CommandRegistry();
+registry.register("ScoreHigh",  new PrintCommand("Scoring high!"));
+registry.register("DriveForward", new PrintCommand("Driving forward!"));
+
+registry.run("ScoreHigh");    // schedules the right command by name
+registry.run("SpinInPlace");  // prints "No command named: SpinInPlace"
+```
+
+This pattern is useful for button-name → command mapping, auto selectors, and any time you need to look something up by identifier rather than by position.
+
+---
+
+## Choosing the right collection
+
+| You need... | Use |
+|-------------|-----|
+| A fixed set of values known at compile time | `array` (`int[]`, `String[]`) |
+| An ordered list that grows/shrinks at runtime | `ArrayList<T>` |
+| Fast lookup by name or key | `HashMap<K, V>` |
+| Ordered key lookup (alphabetical, numerical) | `TreeMap<K, V>` |
+| Unique elements, fast membership test | `HashSet<T>` |
+| A queue (first in, first out) | `LinkedList<T>` or `ArrayDeque<T>` |
+
+For FRC, `ArrayList` and `HashMap` cover the vast majority of cases.
+
+---
+
+## Interactive trace
+
+<CodeTrace
+  client:load
+  variables={{ list: "[]", size: 0, last: "n/a" }}
+  steps={[
+    {
+      code: "ArrayList<String> names = new ArrayList<>();",
+      state: { list: "[]", size: 0, last: "n/a" },
+      comment: "empty list created"
+    },
+    {
+      code: "names.add(\"DriveForward\");",
+      state: { list: "[DriveForward]", size: 1, last: "DriveForward" },
+      comment: "first element added"
+    },
+    {
+      code: "names.add(\"TwoPiece\");",
+      state: { list: "[DriveForward, TwoPiece]", size: 2, last: "TwoPiece" },
+      comment: "appended to end"
+    },
+    {
+      code: "names.add(\"ThreePiece\");",
+      state: { list: "[DriveForward, TwoPiece, ThreePiece]", size: 3, last: "ThreePiece" },
+      comment: "list grows automatically"
+    },
+    {
+      code: "names.remove(\"TwoPiece\");",
+      state: { list: "[DriveForward, ThreePiece]", size: 2, last: "ThreePiece" },
+      comment: "removed by value — ThreePiece shifts left"
+    },
+    {
+      code: "last = names.get(names.size() - 1);",
+      state: { list: "[DriveForward, ThreePiece]", size: 2, last: "ThreePiece" },
+      comment: "get last element by index"
+    }
+  ]}
+/>
+
+---
+
+## Key takeaways
+
+- `ArrayList<T>` is a resizable ordered list. Use it when the number of elements isn't known at compile time.
+- `HashMap<K, V>` is a key-value lookup table. Use it when you need to retrieve something by name or identifier.
+- The for-each loop (`for (T item : list)`) is the cleanest way to iterate when you don't need the index.
+- `HashMap.get()` returns `null` for missing keys — always use `getOrDefault()` or `containsKey()` to avoid `NullPointerException`.
+- Arrays are still the right choice for data that is fixed-size and known at compile time (motor port numbers, PID constants).
+- `java.util` has many more collection types (`TreeMap`, `HashSet`, `Deque`) but `ArrayList` and `HashMap` cover most FRC use cases.
+
+---
+
+## Common confusions
+
+**"I get a compile error when I put an `int` into `ArrayList<Integer>`."**
+
+Primitive types (`int`, `double`, `boolean`) can't be stored directly in generic collections. Use the wrapper classes: `Integer`, `Double`, `Boolean`. Java automatically converts between `int` and `Integer` (autoboxing), but you must declare the list as `ArrayList<Integer>`, not `ArrayList<int>`.
+
+**"`HashMap` doesn't print in the order I inserted things."**
+
+Correct — `HashMap` makes no ordering guarantee. If you need insertion order, use `LinkedHashMap`. If you need alphabetical order on keys, use `TreeMap`.
+
+**"I used `remove(1)` on an `ArrayList<Integer>` and it removed the wrong thing."**
+
+When the list element type is `Integer` and you call `remove(1)`, Java interprets `1` as an int index and removes the element at position 1, not the element with value 1. To remove by value, cast: `list.remove(Integer.valueOf(1))`.
+
+**"My for-each loop threw `ConcurrentModificationException`."**
+
+You removed an element from the list while iterating it. Collect elements to remove in a separate list and call `removeAll()` after the loop, or use `Iterator.remove()` inside an explicit iterator loop.
+
+---
+
+## Challenge
+
+<Try>
+Write a method `keepPositives(ArrayList<Integer> numbers)` that returns a new `ArrayList<Integer>` containing only the positive values (greater than zero) from the input list. Then call it on a mixed list and print the result.
+
+Expected output:
+```
+Original: [15, -3, 40, 0, -12, 7, 99]
+Positives: [15, 40, 7, 99]
+```
+</Try>
+
+<CodeEditor
+  client:load
+  starterCode={`import java.util.ArrayList;
+
+public class Main {
+
+    static ArrayList<Integer> keepPositives(ArrayList<Integer> numbers) {
+        ArrayList<Integer> result = new ArrayList<>();
+        for (int n : numbers) {
+            if (n > 0) {
+                result.add(n);
+            }
+        }
+        return result;
+    }
+
+    public static void main(String[] args) {
+        ArrayList<Integer> data = new ArrayList<>();
+        data.add(15);
+        data.add(-3);
+        data.add(40);
+        data.add(0);
+        data.add(-12);
+        data.add(7);
+        data.add(99);
+
+        ArrayList<Integer> positives = keepPositives(data);
+
+        System.out.println("Original: " + data);
+        System.out.println("Positives: " + positives);
+    }
+}`}
+  testCases={[
+    {
+      label: "filters negatives and zero",
+      expected: "Original: [15, -3, 40, 0, -12, 7, 99]\nPositives: [15, 40, 7, 99]"
+    }
+  ]}
+  hint="Create an empty result ArrayList. Loop through the input with a for-each loop. If the element is greater than 0, add it to result. Return result at the end. ArrayList's toString() produces the [a, b, c] format automatically."
+/>
+
+---
+
+## Bonus: combining ArrayList and HashMap
+
+<Try>
+For extra practice, try this: create a `HashMap<String, ArrayList<String>>` that maps each driver name to a list of auto routines they have practiced. Add two drivers, give each two or three routines, then print each driver's list.
+</Try>
+
+```java
+import java.util.ArrayList;
+import java.util.HashMap;
+
+public class Main {
+    public static void main(String[] args) {
+        HashMap<String, ArrayList<String>> driverRoutines = new HashMap<>();
+
+        ArrayList<String> alex = new ArrayList<>();
+        alex.add("DriveForward");
+        alex.add("TwoPiece");
+        driverRoutines.put("Alex", alex);
+
+        ArrayList<String> jordan = new ArrayList<>();
+        jordan.add("ThreePiece");
+        jordan.add("Defense");
+        jordan.add("ScoreThenDrive");
+        driverRoutines.put("Jordan", jordan);
+
+        for (HashMap.Entry<String, ArrayList<String>> entry : driverRoutines.entrySet()) {
+            System.out.println(entry.getKey() + ": " + entry.getValue());
+        }
+    }
+}
+```
+
+This pattern — a map whose values are themselves collections — appears in WPILib's command grouping utilities and in any system that organizes items into named categories.
+
+---
+
+## What's next
+
+You've completed the fundamentals track. You can represent programs with variables and types, control flow with conditionals and loops, organize logic with functions, model reality with classes and interfaces, survive errors gracefully, and manage dynamic data with collections.
+
+**Robot Code Lesson 01** is next: how WPILib assembles these ideas into a working robot program, and where your subsystems, commands, and autonomous routines actually fit into the framework.

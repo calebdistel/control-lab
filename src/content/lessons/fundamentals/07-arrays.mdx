@@ -1,0 +1,311 @@
+---
+track: fundamentals
+lesson: 7
+title: Arrays
+prereqs: [fundamentals-06]
+objectives:
+  - Declare and initialize an array with a fixed size and with literal values
+  - Access and modify elements using zero-based indices
+  - Iterate over an array with both a for loop and an enhanced for-each loop
+  - Identify and fix off-by-one errors and ArrayIndexOutOfBoundsException
+---
+
+import Key from '../../../components/Key.astro';
+import Try from '../../../components/Try.astro';
+import Note from '../../../components/Note.astro';
+import Warn from '../../../components/Warn.astro';
+import CodeTrace from '../../../components/demos/CodeTrace.jsx';
+import Quiz from '../../../components/demos/Quiz.jsx';
+import CodeEditor from '../../../components/demos/CodeEditor.jsx';
+
+## Hook
+
+Your robot's arm encoder reports a position reading every 20ms. You want to smooth out sensor noise by averaging the last five readings. So you create five variables:
+
+```java
+double reading1 = 0;
+double reading2 = 0;
+double reading3 = 0;
+double reading4 = 0;
+double reading5 = 0;
+```
+
+Now you want the average. Then you realize you need to shift readings when a new one arrives — `reading5 = reading4`, `reading4 = reading3`, and so on. Five lines of copy/paste just to shift a window. What if you needed 20 readings?
+
+An array stores a sequence of values under a single name. You access each one by its position. The shift becomes a loop.
+
+## Core concept
+
+<Key>
+An array is an ordered, fixed-size collection of values of the same type. Elements are accessed by their index — a zero-based integer position.
+</Key>
+
+## Declaring and initializing arrays
+
+There are two common ways to create an array in Java.
+
+**Fixed size, filled with zeros (or default values):**
+
+```java
+double[] readings = new double[5];  // [0.0, 0.0, 0.0, 0.0, 0.0]
+int[]    counts   = new int[3];     // [0, 0, 0]
+boolean[] flags   = new boolean[4]; // [false, false, false, false]
+```
+
+**Literal initialization — when you know the values upfront:**
+
+```java
+double[] setpoints = { 0.0, 30.0, 60.0, 90.0, 120.0 };
+String[] modes     = { "teleop", "auto", "test" };
+```
+
+The array's size is fixed at creation. You cannot add or remove elements later.
+
+## Index access
+
+Elements are numbered starting from **0**. An array of size 5 has indices 0, 1, 2, 3, 4.
+
+```java
+double[] readings = new double[5];
+
+// Writing to elements:
+readings[0] = 47.3;
+readings[1] = 48.1;
+readings[2] = 46.9;
+
+// Reading elements:
+double first = readings[0];   // 47.3
+double third = readings[2];   // 46.9
+
+// The length property:
+int size = readings.length;   // 5
+```
+
+<Note>
+`readings.length` is a property, not a method — no parentheses. This trips up beginners who expect `readings.length()` by analogy with `String.length()`. Arrays use a field; String uses a method.
+</Note>
+
+Visualizing the array:
+
+```
+Index:    0      1      2      3      4
+       ┌──────┬──────┬──────┬──────┬──────┐
+       │ 47.3 │ 48.1 │ 46.9 │  0.0 │  0.0 │
+       └──────┴──────┴──────┴──────┴──────┘
+```
+
+## Iterating with a for loop
+
+A standard `for` loop walks every element:
+
+```java
+double[] setpoints = { 0.0, 30.0, 60.0, 90.0, 120.0 };
+
+for (int i = 0; i < setpoints.length; i++) {
+    System.out.println("Setpoint " + i + ": " + setpoints[i]);
+}
+```
+
+Output:
+```
+Setpoint 0: 0.0
+Setpoint 1: 30.0
+Setpoint 2: 60.0
+Setpoint 3: 90.0
+Setpoint 4: 120.0
+```
+
+The condition is `i < setpoints.length`, not `i <= setpoints.length`. If you use `<=`, the loop tries to access `setpoints[5]` — which doesn't exist.
+
+## The enhanced for-each loop
+
+When you only need to read values (not track the index or modify elements), the for-each loop is cleaner:
+
+```java
+double total = 0.0;
+for (double reading : readings) {
+    total += reading;
+}
+double average = total / readings.length;
+```
+
+Read `for (double reading : readings)` as "for each double named `reading` in `readings`."
+
+The trade-off: you lose access to the index. If you need to know *which* element you're on, use the regular `for` loop.
+
+## FRC context: encoder history buffer
+
+Here's the rolling-average encoder smoother from the hook, now properly implemented:
+
+```java
+private double[] history = new double[5];
+private int nextSlot = 0;
+
+public void updateHistory(double newReading) {
+    history[nextSlot] = newReading;
+    nextSlot = (nextSlot + 1) % history.length;  // wrap around: 0,1,2,3,4,0,1,...
+}
+
+public double smoothedPosition() {
+    double total = 0.0;
+    for (double val : history) {
+        total += val;
+    }
+    return total / history.length;
+}
+```
+
+Each call to `updateHistory` writes into the oldest slot. The modulo (`%`) operator wraps the index back to 0 after it reaches the end. This pattern — a **circular buffer** — comes up often in sensor processing.
+
+## FRC context: angle setpoints
+
+Arrays also store lookup tables. An arm might have named positions mapped to degree values:
+
+```java
+// Index matches a button number: button 0 → stow, button 1 → low, etc.
+double[] armSetpoints = { 5.0, 30.0, 75.0, 110.0 };
+
+int button = controller.getPOV() / 90;  // D-pad: 0,90,180,270 → 0,1,2,3
+double targetAngle = armSetpoints[button];
+arm.setTargetDegrees(targetAngle);
+```
+
+Without an array, this would be four separate `if/else if` blocks.
+
+## Tracing an array loop
+
+Watch a sum-of-array loop execute step by step:
+
+<CodeTrace
+  client:load
+  variables={{ i: 0, total: 0.0, "arr[i]": "?" }}
+  steps={[
+    { code: "i=0; check i < 3",   state: { i: 0, total: 0.0,  "arr[i]": 10.0 }, comment: "true, enter loop" },
+    { code: "total += arr[0]",    state: { i: 0, total: 10.0, "arr[i]": 10.0 }, comment: "10.0 + 0.0" },
+    { code: "i++",                state: { i: 1, total: 10.0, "arr[i]": 20.0 }, comment: "advance" },
+    { code: "check i < 3",        state: { i: 1, total: 10.0, "arr[i]": 20.0 }, comment: "true" },
+    { code: "total += arr[1]",    state: { i: 1, total: 30.0, "arr[i]": 20.0 }, comment: "10.0 + 20.0" },
+    { code: "i++",                state: { i: 2, total: 30.0, "arr[i]": 30.0 }, comment: "advance" },
+    { code: "check i < 3",        state: { i: 2, total: 30.0, "arr[i]": 30.0 }, comment: "true" },
+    { code: "total += arr[2]",    state: { i: 2, total: 60.0, "arr[i]": 30.0 }, comment: "30.0 + 30.0" },
+    { code: "i++",                state: { i: 3, total: 60.0, "arr[i]": "?" },  comment: "advance" },
+    { code: "check i < 3",        state: { i: 3, total: 60.0, "arr[i]": "?" },  comment: "false — exit" },
+  ]}
+/>
+
+## Common mistakes
+
+### Off-by-one: `<=` instead of `<`
+
+```java
+// WRONG — ArrayIndexOutOfBoundsException when i == readings.length
+for (int i = 0; i <= readings.length; i++) {
+    System.out.println(readings[i]);
+}
+
+// CORRECT
+for (int i = 0; i < readings.length; i++) {
+    System.out.println(readings[i]);
+}
+```
+
+<Warn>
+`ArrayIndexOutOfBoundsException` is the most common array error. It means you tried to access an index that doesn't exist — either negative or >= length. The exception message tells you the bad index: `Index 5 out of bounds for length 5`.
+</Warn>
+
+### Hardcoding the length instead of using `.length`
+
+```java
+// FRAGILE — if you change the array size, you must update this number too
+for (int i = 0; i < 5; i++) { ... }
+
+// ROBUST — always correct regardless of array size
+for (int i = 0; i < readings.length; i++) { ... }
+```
+
+### Dividing by zero when the array is empty
+
+If you compute `total / array.length` and the array has length 0, you get `NaN` (not a number) or an exception. Guard against it:
+
+```java
+double average(double[] values) {
+    if (values.length == 0) return 0.0;
+    double total = 0.0;
+    for (double v : values) total += v;
+    return total / values.length;
+}
+```
+
+## Knowledge check
+
+<Quiz
+  client:load
+  question="An array is declared as: int[] data = new int[4]; What is data[4]?"
+  options={[
+    "0 — the default value for uninitialized int elements",
+    "An ArrayIndexOutOfBoundsException — index 4 doesn't exist in a size-4 array",
+    "null",
+    "The length of the array"
+  ]}
+  correct={1}
+  explanation="A size-4 array has indices 0, 1, 2, 3. Index 4 does not exist. Accessing it throws ArrayIndexOutOfBoundsException at runtime. The last valid index is always length - 1."
+/>
+
+<Quiz
+  client:load
+  question="You want to loop over all elements of double[] values using a for loop. Which condition is correct?"
+  options={[
+    "i <= values.length",
+    "i < values.length",
+    "i < values.length - 1",
+    "i <= values.length - 1"
+  ]}
+  correct={1}
+  explanation="i < values.length stops after index (length-1), which is the last valid index. Options A and D both cause an out-of-bounds access on the final iteration. Option C stops one element early, missing the last element."
+/>
+
+## Key takeaways
+
+- Arrays are fixed-size, zero-indexed collections of a single type.
+- The last valid index is always `array.length - 1`. Accessing `array[array.length]` throws `ArrayIndexOutOfBoundsException`.
+- Use a regular `for` loop when you need the index; use a for-each loop when you only need the values.
+- Always use `array.length` in loop conditions — never hardcode the size.
+
+## Common confusions
+
+**"I assigned a new value to the for-each variable but the array didn't change."** The for-each variable is a copy of the element for primitives (int, double, etc.). Modifying it doesn't modify the array. Use a regular `for` loop with index assignment: `arr[i] = newValue`.
+
+**"I initialized `double[] values = new double[5]` but I get all zeros."** That's correct — Java initializes numeric arrays to zero, boolean arrays to false, and object arrays to null. If you want specific values, assign them or use literal initialization `{ 1.0, 2.0, ... }`.
+
+## Challenge
+
+<Try>
+Compute the average of an array of motor speed readings. Return the average as a double. If the array is empty, return 0.0.
+</Try>
+
+<CodeEditor
+  client:load
+  starterCode={`public class Main {
+
+    static double average(double[] values) {
+        // Compute and return the average of all elements.
+        // Return 0.0 if the array is empty.
+        return 0.0; // fix this
+    }
+
+    public static void main(String[] args) {
+        System.out.println(average(new double[]{0.5, 0.6, 0.4, 0.5, 0.5}));  // 0.5
+        System.out.println(average(new double[]{1.0, 0.0}));                  // 0.5
+        System.out.println(average(new double[]{0.8}));                        // 0.8
+        System.out.println(average(new double[]{}));                           // 0.0
+    }
+}`}
+  testCases={[
+    { label: "Average of various arrays including empty", expected: "0.5\n0.5\n0.8\n0.0" },
+  ]}
+  hint="Sum all elements with a for-each loop, then divide by values.length. Check for length == 0 before dividing."
+/>
+
+## What's next
+
+In **Lesson 8**, we'll look at classes and objects — how to bundle related data and behavior together into a reusable type, instead of managing parallel arrays of motor speeds, encoder positions, and sensor flags.

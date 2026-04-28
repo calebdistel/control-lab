@@ -1,0 +1,306 @@
+---
+track: control-systems
+lesson: 10
+title: Flywheel Velocity Control
+prereqs: [control-systems-07]
+objectives:
+  - Explain why consistent flywheel velocity directly affects shot consistency in FRC games
+  - Convert encoder native units to RPM and apply the correct gear ratio
+  - Compute the expected feedforward output voltage for a flywheel given kV and kS constants
+  - Describe the role of small PID correction on top of a dominant feedforward
+  - Compare the tradeoffs between fast spin-up time and steady-state velocity stability
+---
+
+import Key from '../../../components/Key.astro';
+import Try from '../../../components/Try.astro';
+import Note from '../../../components/Note.astro';
+import Warn from '../../../components/Warn.astro';
+import CodeTrace from '../../../components/demos/CodeTrace.jsx';
+import Quiz from '../../../components/demos/Quiz.jsx';
+import CodeEditor from '../../../components/demos/CodeEditor.jsx';
+
+## Hook
+
+Your team's shooter works perfectly in the pit — every note lands in the speaker. But in the match, after the robot drives and bumps into something, the flywheel slows slightly and two shots miss. The wheel was at 4800 RPM in the pit; after the bump it was at 4650 RPM. That 3% drop changed the launch angle enough to miss. Flywheel velocity control is about holding an exact speed consistently — under load, after disturbances, and throughout the entire match.
+
+## Core concept
+
+<Key>
+Flywheels are velocity-controlled mechanisms. The dominant control effort is feedforward — a voltage proportional to the target velocity. A small PID term corrects the residual error. The feedforward must be accurate enough that PID barely has to work, because high PID gains on a high-inertia flywheel cause instability.
+</Key>
+
+## Why velocity matters for shot consistency
+
+A ball or disc leaves the flywheel with kinetic energy proportional to the wheel's velocity squared. A 3% drop in velocity means roughly 6% less kinetic energy — enough to change the projectile's trajectory. In competition, the target is fixed and the robot is within a known shooting zone, so the exit velocity must hit a narrow window every time.
+
+Factors that disturb flywheel velocity:
+- **Piece contact** — loading a ball against the spinning wheel creates a momentary braking torque
+- **Battery voltage sag** — as battery voltage drops during a match, an open-loop system slows
+- **Temperature** — motor resistance rises when hot, changing the velocity-voltage relationship
+- **Brownouts** — brief roboRIO power dips under heavy current draw
+
+Good velocity control compensates for all of these automatically.
+
+## Reading encoder velocity
+
+### CANSparkMax (NEO / NEO 550)
+
+```java
+CANSparkMax motor = new CANSparkMax(1, MotorType.kBrushless);
+RelativeEncoder encoder = motor.getEncoder();
+
+// getVelocity() returns RPM of the motor shaft by default
+double motorRPM = encoder.getVelocity();
+```
+
+If there is a gearbox between the motor and the flywheel wheel:
+
+```
+flywheel RPM = motorRPM / gearRatio
+```
+
+For a 1:1 direct drive, `gearRatio = 1.0`. For a 3:1 reduction, `gearRatio = 3.0`.
+
+```java
+double gearRatio = 1.5;  // 1.5:1 reduction
+double flywheelRPM = encoder.getVelocity() / gearRatio;
+```
+
+You can also bake the conversion into the encoder object:
+
+```java
+encoder.setVelocityConversionFactor(1.0 / gearRatio);
+// Now getVelocity() returns flywheel RPM directly
+```
+
+### Talon FX (Falcon 500 / Kraken)
+
+```java
+TalonFX motor = new TalonFX(1);
+// getVelocity() returns rotations per second (post-gearbox if configured)
+double rps = motor.getVelocity().getValueAsDouble();
+double rpm = rps * 60.0;
+```
+
+Configure the sensor-to-mechanism ratio in `MotorOutputConfigs` or `FeedbackConfigs` so that all position and velocity readings are in mechanism units (flywheel shaft), not motor shaft units.
+
+## Unit conversion checklist
+
+| Value | Unit | Conversion |
+|-------|------|-----------|
+| Motor shaft velocity | RPM | divide by gear ratio → flywheel RPM |
+| Flywheel RPM | RPM | multiply by 2*pi/60 → rad/s |
+| kV in WPILib SimpleMotorFeedforward | V·s/rad | use rad/s as velocity unit |
+| kV in hand-tuned empirical loop | V/RPM | use RPM as velocity unit |
+
+Pick one velocity unit and stick with it throughout. Mixing RPM in some places and rad/s in others is the most common source of flywheel tuning bugs.
+
+## Feedforward dominates
+
+For a flywheel at steady state (constant velocity, zero acceleration), the motor needs to supply:
+
+```
+voltage = kS * sign(velocity) + kV * velocity
+```
+
+- `kS` overcomes static friction — a constant offset in the direction of motion
+- `kV` is the back-EMF coefficient — how many volts per unit of velocity
+
+At a target velocity the PID error is small, so:
+
+```
+totalVoltage ≈ kS + kV * targetVelocity   (for forward-spinning flywheel)
+```
+
+Example: kS = 0.12 V, kV = 0.0022 V/RPM, targetVelocity = 5000 RPM
+
+```
+voltage = 0.12 + 0.0022 * 5000
+voltage = 0.12 + 11.0
+voltage = 11.12 V
+```
+
+The feedforward supplies 11.12 V. The PID might add ±0.3 V to correct small deviations. If you had no feedforward, the PID would need to supply all 11 V itself — requiring enormous gains that would cause violent oscillation.
+
+## Small PID on top
+
+```java
+SimpleMotorFeedforward ff = new SimpleMotorFeedforward(kS, kV);
+PIDController pid = new PIDController(kP, 0, 0);  // typically no I or D for flywheels
+
+// In periodic:
+double ffVolts  = ff.calculate(targetRPM);
+double pidVolts = pid.calculate(currentRPM, targetRPM);
+motor.setVoltage(ffVolts + pidVolts);
+```
+
+`kP` should be small — enough to pull the flywheel back on target after a disturbance, but not so large it overshoots and oscillates. A starting point is `kP` such that a 100 RPM error produces about 0.2–0.5 V of correction.
+
+<Note>
+Some teams use a velocity PID built into the motor controller (Talon's `ClosedLoopOutput`, Spark's `SparkPIDController`) for tighter loop timing. The math is identical; the loop runs at 1 kHz on the controller instead of 50 Hz in robot code.
+</Note>
+
+## Spin-up time vs. stability tradeoff
+
+**High kP and high kA (acceleration feedforward):**
+- Faster spin-up — the flywheel reaches target velocity quickly
+- Risk: overshoots and oscillates around the target, especially with high-inertia wheels
+
+**Low kP, pure kV feedforward:**
+- Very stable at steady state — smooth, no oscillation
+- Slower recovery from disturbances (piece loading)
+
+**Practical strategy for game pieces:**
+1. Use generous `kV` feedforward to hold steady state nearly perfectly.
+2. Use small `kP` (proportional only) to handle the post-load dip.
+3. Gate shooting behind an `atTargetVelocity()` check — only allow firing when `|currentRPM - targetRPM| < tolerance`.
+
+```java
+public boolean atTargetVelocity() {
+    return Math.abs(currentRPM - targetRPM) < 150;  // within 150 RPM
+}
+```
+
+## On-controller vs. WPILib PID
+
+| Approach | Loop rate | Latency | Best for |
+|----------|-----------|---------|---------|
+| WPILib PIDController in periodic() | 50 Hz | ~20 ms | Quick prototyping, most mechanisms |
+| CANSparkMax SparkPIDController | 1 kHz | ~1 ms | High-RPM velocity loops |
+| Talon FX onboard PID | 1 kHz | ~1 ms | High-RPM velocity loops |
+
+For flywheels running at thousands of RPM, the 1 kHz on-controller loop often gives noticeably smoother velocity hold because disturbances are corrected 20x faster than a roboRIO-side loop.
+
+### CANSparkMax onboard velocity PID
+
+```java
+SparkPIDController sparkPID = motor.getPIDController();
+sparkPID.setP(kP);
+sparkPID.setFF(kFF);   // kFF in this API is voltage / RPM (not WPILib SimpleMotorFeedforward units)
+
+// In periodic:
+sparkPID.setReference(targetRPM, CANSparkMax.ControlType.kVelocity);
+```
+
+`kFF` on the Spark replaces `kV` in WPILib notation. The Spark automatically multiplies `kFF * targetRPM` and adds it to the PID output. You do not call `ff.calculate()` separately.
+
+<Warn>
+Spark's kFF units (V / RPM) differ from WPILib SimpleMotorFeedforward kV units (V·s/rad). If you run SysId and get a kV in V·s/rad, convert: kFF (V/RPM) = kV / (2*pi/60) = kV * 60 / (2*pi). Plugging the WPILib kV directly into the Spark's FF slot will result in wildly wrong output.
+</Warn>
+
+## Putting it together — full WPILib flywheel subsystem
+
+```java
+public class ShooterSubsystem extends SubsystemBase {
+    private final CANSparkMax motor = new CANSparkMax(5, MotorType.kBrushless);
+    private final RelativeEncoder encoder = motor.getEncoder();
+
+    private final SimpleMotorFeedforward ff = new SimpleMotorFeedforward(0.12, 0.0022);
+    private final PIDController pid = new PIDController(0.004, 0, 0);
+
+    private double targetRPM = 0;
+
+    public ShooterSubsystem() {
+        // Direct drive: no gear ratio conversion needed
+        motor.setIdleMode(IdleMode.kCoast);  // don't fight inertia on stop
+    }
+
+    public void setTargetRPM(double rpm) {
+        targetRPM = rpm;
+    }
+
+    public boolean atTarget() {
+        return Math.abs(encoder.getVelocity() - targetRPM) < 150;
+    }
+
+    @Override
+    public void periodic() {
+        double currentRPM = encoder.getVelocity();
+        double ffVolts  = ff.calculate(targetRPM);
+        double pidVolts = pid.calculate(currentRPM, targetRPM);
+        motor.setVoltage(ffVolts + pidVolts);
+    }
+}
+```
+
+## Key takeaways
+
+- Flywheel shot consistency depends directly on holding a precise exit velocity.
+- Read velocity in a single consistent unit (RPM or rad/s) and apply gear ratio conversion once.
+- The feedforward equation `kS * sign(v) + kV * v` provides most of the required voltage at steady state.
+- A small proportional PID corrects post-disturbance error without destabilizing the flywheel.
+- High-inertia flywheels benefit from on-controller PID (1 kHz) over roboRIO PID (50 Hz).
+- Gate shooting behind a velocity tolerance check to prevent off-speed shots.
+
+## Common confusions
+
+**"My flywheel oscillates even with a small kP."** Check that your feedforward is accurate first. If `kV` is even 10% wrong, the steady-state error is large and PID fights to correct it — looking like oscillation. Characterize with SysId before tuning PID.
+
+**"The flywheel is consistently 200 RPM below target."** This is a steady-state error — your `kV` is slightly too small. Increase `kV` so the feedforward alone holds the target. You could also add a small `kI`, but fixing `kV` is cleaner.
+
+**"Spark's setReference works but the velocity swings a lot after loading a ball."** The onboard PID is looping fast, but if `kFF` is wrong, the PID is doing all the work and can't respond fast enough to the large disturbance. Tune `kFF` accurately first.
+
+**"I use RPM in some places and rad/s in others and nothing works."** Pick one. Put a conversion constant at the top of your class if the encoder returns one and WPILib feedforward expects the other.
+
+## Challenge
+
+<Try>
+Given the following flywheel constants, compute the expected feedforward voltage at three different target RPMs: 3000, 4500, and 6000 RPM. Also compute what the PID term would add if the flywheel is 200 RPM slow at each target.
+
+- kS = 0.10 V
+- kV = 0.0020 V/RPM
+- kP = 0.003 V/RPM
+
+Remember: FF = kS + kV * targetRPM (flywheel spins forward, so sign = +1)
+PID correction = kP * error (where error = target - current)
+Total at -200 RPM error = FF + kP * 200
+</Try>
+
+<CodeEditor
+  client:load
+  starterCode={`public class Main {
+    public static void main(String[] args) {
+        double kS  = 0.10;   // V
+        double kV  = 0.0020; // V/RPM
+        double kP  = 0.003;  // V/RPM
+
+        double[] targets = {3000, 4500, 6000};
+        double errorRPM  = 200.0; // flywheel is this far below target
+
+        for (double targetRPM : targets) {
+            double ff        = kS + kV * targetRPM;
+            double pidCorr   = kP * errorRPM;
+            double total     = ff + pidCorr;
+
+            // Round to 2 decimal places for display
+            ff      = Math.round(ff * 100.0) / 100.0;
+            pidCorr = Math.round(pidCorr * 100.0) / 100.0;
+            total   = Math.round(total * 100.0) / 100.0;
+
+            System.out.println("target=" + (int)targetRPM
+                + " ff=" + ff + " pid=" + pidCorr + " total=" + total);
+        }
+    }
+}`}
+  testCases={[
+    { label: "FF and PID outputs at 3000, 4500, 6000 RPM with 200 RPM error", expected: "target=3000 ff=6.1 pid=0.6 total=6.7\ntarget=4500 ff=9.1 pid=0.6 total=9.7\ntarget=6000 ff=12.1 pid=0.6 total=12.7" }
+  ]}
+  hint="FF = kS + kV * targetRPM. PID correction = kP * errorRPM. Total = FF + pidCorrection. The PID term is the same at all three targets because the error (200 RPM) is the same."
+/>
+
+<Quiz
+  client:load
+  question="Your flywheel holds velocity well at steady state but recovers slowly when a ball is loaded. What is the most likely fix?"
+  options={[
+    "Increase kV to raise the feedforward voltage",
+    "Increase kP so the proportional correction pulls velocity back faster",
+    "Decrease kS to reduce the static friction offset",
+    "Switch to a trapezoid profile for velocity control"
+  ]}
+  correct={1}
+  explanation="Slow recovery from disturbances is a proportional gain (kP) problem. The feedforward holds steady-state well, but when velocity drops suddenly, the PID error grows and kP * error needs to be large enough to produce meaningful corrective voltage quickly. Increase kP carefully — too high and it will oscillate."
+/>
+
+## What's next
+
+The next lesson applies similar feedforward and PID techniques to arm position control, where the feedforward is more complex because gravity pulls on the arm differently depending on its angle.
