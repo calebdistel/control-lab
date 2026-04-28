@@ -7,12 +7,7 @@ import { HighlightStyle, syntaxHighlighting, indentOnInput, bracketMatching } fr
 import { closeBrackets } from '@codemirror/autocomplete';
 import { java } from '@codemirror/lang-java';
 import { tags } from '@lezer/highlight';
-
-// On Vercel: same-domain proxy avoids CORS entirely.
-// On localhost (astro dev): fall back to Wandbox directly.
-const EXEC_URL = typeof window !== 'undefined' && window.location.hostname === 'localhost'
-  ? 'https://wandbox.org/api/compile.json'
-  : '/api/execute';
+import { transpile } from '../../lib/javaTranspiler.js';
 
 // ── CobraLink theme ───────────────────────────────────────────
 const cobraTheme = EditorView.theme({
@@ -82,46 +77,78 @@ const errorLineField = StateField.define({
   provide: f => EditorView.decorations.from(f),
 });
 
-// ── Helpers ───────────────────────────────────────────────────
+// ── In-browser Java execution via transpiler + Web Worker ─────
+
+// Worker source as a string — runs transpiled JS in an isolated thread
+const WORKER_SRC = `
+self.onmessage = function({ data: { js } }) {
+  let __buf = '';
+  function __println(x) { __buf += (x === null || x === undefined ? 'null' : String(x)) + '\\n'; }
+  function __print(x)   { __buf += (x === null || x === undefined ? 'null' : String(x)); }
+  try {
+    const run = new Function('__println', '__print', 'Math', js);
+    run(__println, __print, Math);
+    self.postMessage({ stdout: __buf, stderr: '' });
+  } catch (err) {
+    self.postMessage({ stdout: __buf, stderr: err.toString() });
+  }
+};
+`;
+
+let _workerBlobUrl = null;
+function workerUrl() {
+  if (!_workerBlobUrl) {
+    const blob = new Blob([WORKER_SRC], { type: 'text/javascript' });
+    _workerBlobUrl = URL.createObjectURL(blob);
+  }
+  return _workerBlobUrl;
+}
+
 function normalize(s) {
   return String(s ?? '').replace(/\r\n/g, '\n').trim();
 }
 
-async function runCode(code, stdin = '') {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 25000);
+function runCode(javaCode) {
+  let js;
   try {
-    const res = await fetch(EXEC_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ compiler: 'openjdk-head', code, stdin }),
-      signal: controller.signal,
-    });
-    if (!res.ok) throw new Error(`Execution server error: HTTP ${res.status}`);
-    const data = await res.json();
-    return {
-      stdout: data.program_output ?? '',
-      stderr: (data.compiler_message ?? '') + (data.program_error ?? ''),
-      code:   parseInt(data.status ?? '0'),
-    };
+    js = transpile(javaCode);
   } catch (err) {
-    if (err.name === 'AbortError') throw new Error('Request timed out — the execution server may be slow');
-    throw err;
-  } finally {
-    clearTimeout(timer);
+    return Promise.resolve({ stdout: '', stderr: `Transpile error: ${err.message}`, code: 1 });
   }
+
+  return new Promise(resolve => {
+    const worker = new Worker(workerUrl());
+    const timer = setTimeout(() => {
+      worker.terminate();
+      resolve({ stdout: '', stderr: 'Timed out — check for an infinite loop.', code: 1 });
+    }, 10000);
+
+    worker.onmessage = ({ data }) => {
+      clearTimeout(timer);
+      worker.terminate();
+      resolve({ stdout: data.stdout, stderr: data.stderr, code: data.stderr ? 1 : 0 });
+    };
+    worker.onerror = (e) => {
+      clearTimeout(timer);
+      worker.terminate();
+      resolve({ stdout: '', stderr: e.message || 'Worker error', code: 1 });
+    };
+
+    worker.postMessage({ js });
+  });
 }
 
-function parseJavaError(stderr) {
-  let m = stderr.match(/\w+\.java:(\d+):\s*error:\s*(.+)/);
-  if (m) return { line: parseInt(m[1]), message: m[2].trim() };
-  m = stderr.match(/at\s+\S+\.main\(\w+\.java:(\d+)\)/);
-  const lineNum = m ? parseInt(m[1]) : null;
-  const raw = stderr.split('\n')[0]
-    .replace(/^Exception in thread "[^"]*"\s*/, '')
-    .replace(/^(java\.lang\.|java\.util\.|java\.io\.)/, '')
-    .trim();
-  return { line: lineNum, message: raw || 'Runtime error' };
+function parseRuntimeError(stderr) {
+  if (!stderr) return { line: null, message: '' };
+  if (stderr.includes('timed out') || stderr.includes('Timed out'))
+    return { line: null, message: 'Execution timed out — check for an infinite loop.' };
+  if (stderr.includes('is not defined')) {
+    const m = stderr.match(/'?(\w+)'? is not defined/);
+    return { line: null, message: m ? `'${m[1]}' is not defined — check your variable name or declaration.` : stderr };
+  }
+  if (stderr.includes('SyntaxError'))
+    return { line: null, message: 'Syntax error — check for missing semicolons, braces, or parentheses.' };
+  return { line: null, message: stderr.split('\n')[0] };
 }
 
 // LCS character-level diff
@@ -295,26 +322,19 @@ export default function CodeEditor({ starterCode = '', testCases = [], hint = ''
 
     for (let i = 0; i < testCases.length; i++) {
       const tc = testCases[i];
-      try {
-        const { stdout, stderr, code: exitCode } = await runCode(code, tc.input ?? '');
+      const { stdout, stderr, code: exitCode } = await runCode(code);
 
-        if (exitCode !== 0 && !stdout) {
-          const { line, message } = parseJavaError(stderr);
-          if (line) highlightErrorLine(line);
-          setErrBanner(message);
-          next.push({ passed: false, error: message, stderr, actual: '' });
-        } else {
-          const actual   = normalize(stdout);
-          const expected = normalize(tc.expected);
-          next.push({ passed: actual === expected, actual, expected, stderr });
-        }
-      } catch (err) {
-        const msg = err.message?.includes('timed out')
-          ? err.message
-          : 'Could not reach the code execution server. The service may be temporarily unavailable.';
-        next.push({ passed: false, error: msg, stderr: '', actual: '' });
-        setRunError(msg);
+      if (exitCode !== 0 && !stdout) {
+        const { line, message } = parseRuntimeError(stderr);
+        if (line) highlightErrorLine(line);
+        setErrBanner(message);
+        next.push({ passed: false, error: message, stderr, actual: '' });
+        setResults([...next, ...testCases.slice(i + 1).map(() => null)]);
         break;
+      } else {
+        const actual   = normalize(stdout);
+        const expected = normalize(tc.expected);
+        next.push({ passed: actual === expected, actual, expected, stderr });
       }
       setResults([...next, ...testCases.slice(i + 1).map(() => null)]);
     }
