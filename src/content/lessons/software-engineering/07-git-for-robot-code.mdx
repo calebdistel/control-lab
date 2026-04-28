@@ -1,0 +1,369 @@
+---
+track: software-engineering
+lesson: 7
+title: Git for Robot Code
+prereqs: [frc-intro-03]
+objectives:
+  - Apply a main/dev/feature branching strategy appropriate for FRC build season timelines
+  - Tag competition builds so you can reliably redeploy a known-good version at any event
+  - Resolve a merge conflict in a robot code file by identifying the conflicting changes and choosing the correct resolution
+  - Configure a .gitignore for WPILib projects to exclude build artifacts and IDE-specific files
+---
+
+import Key from '../../../components/Key.astro';
+import Try from '../../../components/Try.astro';
+import Note from '../../../components/Note.astro';
+import Warn from '../../../components/Warn.astro';
+import Quiz from '../../../components/demos/Quiz.jsx';
+import CodeEditor from '../../../components/demos/CodeEditor.jsx';
+
+## Hook
+
+It's 6 hours before your first qualifying match. You made one last change last night — "just a small PID gain tweak" — and now the robot drives sideways. You can fix it, but you need to know exactly what changed.
+
+You have no Git history. You've been saving over the same files all build season. The "working version" is whatever was last deployed, and you can't get it back.
+
+Meanwhile, the team in the next pit pulls up their Git log, finds the last green commit from two days ago, runs `git checkout v1.3-regional1`, deploys in 90 seconds, and is on the field.
+
+Git is not overhead. At competition, it's a time machine.
+
+## Core concept
+
+<Key>
+Git tracks every change to your robot code as a commit. A branching strategy (main/dev/feature) keeps stable code separate from work in progress. Tags mark known-good competition builds. When something breaks, git gives you a reliable way back — to a specific commit, a previous deploy, or the exact code from last week's event.
+</Key>
+
+## The FRC branching strategy
+
+A three-branch model works well for most FRC teams:
+
+```
+main     ← competition-ready, only merge here when it works
+  └── dev    ← day-to-day development, integration of features
+        └── feature/arm-pid-tuning    ← isolated work in progress
+        └── feature/auto-routine-2    ← another isolated feature
+```
+
+### main
+
+- Always represents code that has been tested and is ready to deploy.
+- Never commit directly to main — only merge from `dev` after testing.
+- Every merge to `main` should be tagged with a version.
+
+### dev
+
+- The active development branch. Feature branches merge here.
+- Code on `dev` may be half-finished or under testing.
+- At competition: `dev` gets merged to `main` only after a successful test drive.
+
+### feature branches
+
+- One branch per feature or experiment: `feature/intake-redesign`, `fix/arm-limit-switch`.
+- Branch from `dev`, merge back to `dev` when done.
+- Short-lived — don't let a feature branch go stale for more than a week.
+
+### Basic workflow
+
+```bash
+# Start a new feature
+git checkout dev
+git pull origin dev
+git checkout -b feature/hood-angle-tuning
+
+# Work, commit often
+git add src/main/java/frc/robot/subsystems/HoodSubsystem.java
+git commit -m "Add hood angle lookup table for three scoring positions"
+
+# Merge back to dev when tested
+git checkout dev
+git merge feature/hood-angle-tuning
+git push origin dev
+
+# When dev is stable and tested on the robot, merge to main
+git checkout main
+git merge dev
+git push origin main
+```
+
+<Note>
+Commit often. A commit takes five seconds and can save hours. The rule of thumb: commit any time you have something that works, even if it's incomplete. "Add intake motor control, no PID yet" is a perfectly valid commit message.
+</Note>
+
+## Committing before every competition deploy
+
+Make this a non-negotiable rule: **always commit before deploying to the robot.**
+
+Why: if the deploy breaks the robot, you need to know exactly what code is on the robot. If you have uncommitted changes and the deploy fails, you don't know what state the robot is in.
+
+```bash
+# Pre-deploy checklist:
+git status                    # are there uncommitted changes?
+git add -p                    # review and stage each change
+git commit -m "Tune arm PID for competition field"
+./gradlew deploy              # then deploy
+```
+
+If the deploy worked and the robot is good:
+
+```bash
+git push origin dev  # share the working state
+```
+
+## Tagging competition builds
+
+Tags mark specific commits with a human-readable name. Use them for every competition deploy:
+
+```bash
+# Tag the current commit as the Week 1 regional build
+git tag -a v1.0-week1regional -m "Week 1 Regional - qualifying round 1 deploy"
+git push origin v1.0-week1regional
+
+# After a change for playoffs:
+git tag -a v1.1-week1playoffs -m "Week 1 Regional - playoff tuning"
+git push origin v1.1-week1playoffs
+```
+
+Tag naming convention for FRC:
+
+```
+v[major].[minor]-[event]
+v1.0-week1regional
+v1.1-week1regional-playoffs
+v2.0-week2regional
+v2.3-champs
+```
+
+To deploy a tagged version at any time:
+
+```bash
+git checkout v1.0-week1regional
+./gradlew deploy
+```
+
+<Warn>
+After checking out a tag to recover, you're in "detached HEAD" state — commits won't belong to any branch. If you need to make fixes on top of the tagged version, create a branch from it: `git checkout -b hotfix/week1 v1.0-week1regional`.
+</Warn>
+
+## The WPILib .gitignore
+
+Without a `.gitignore`, Git will track build artifacts, Gradle cache files, and IDE settings — huge files that don't belong in version control and cause conflicts.
+
+Create or update `.gitignore` at the root of your project:
+
+```
+# Gradle build outputs
+build/
+.gradle/
+
+# WPILib simulation output
+simulation/
+
+# Java class files
+*.class
+
+# IDE files
+.vscode/settings.json
+.idea/
+*.iml
+
+# VS Code WPILib extension generates these
+.wpilib/
+
+# Operating system files
+.DS_Store
+Thumbs.db
+
+# Vendor deps are tracked — don't ignore vendordeps/
+# src/main/deploy/ is tracked — contains deploy configs
+```
+
+The vendordeps folder (`vendordeps/`) should be committed — it contains the JSON files that tell WPILib which vendor libraries to download. The downloaded jars themselves are in `build/` and should be ignored.
+
+<Note>
+WPILib's project template includes a starter `.gitignore`. If you started from the template, check that it's there — if you created the project manually, you may need to add it.
+</Note>
+
+## Resolving merge conflicts in robot code
+
+Merge conflicts happen when two branches change the same lines of the same file. Git can't auto-resolve them — it asks you to decide.
+
+A conflict looks like this in the file:
+
+```java
+public void configureBindings() {
+<<<<<<< HEAD (your current branch: dev)
+    controller.a().onTrue(new ArmToPositionCommand(arm, 120.0));
+    controller.b().onTrue(new ArmToPositionCommand(arm, 45.0));
+=======
+    controller.a().onTrue(new ArmToPositionCommand(arm, 135.0));
+    controller.x().whileTrue(new IntakeCommand(intake));
+>>>>>>> feature/arm-tuning
+}
+```
+
+How to resolve:
+
+1. **Understand both sides.** `HEAD` is your current branch. The bottom is the incoming branch. What did each person change?
+2. **Decide what the correct final code should be.** In this case: use 135° (the tuned value), keep the `b()` binding from dev, and keep the new `x()` binding.
+3. **Edit the file** to contain the correct final version, removing all `<<<<`, `====`, `>>>>` markers.
+4. **Stage and commit** the resolved file.
+
+```java
+// Resolved:
+public void configureBindings() {
+    controller.a().onTrue(new ArmToPositionCommand(arm, 135.0));  // tuned angle
+    controller.b().onTrue(new ArmToPositionCommand(arm, 45.0));   // from dev
+    controller.x().whileTrue(new IntakeCommand(intake));           // new feature
+}
+```
+
+```bash
+git add src/main/java/frc/robot/RobotContainer.java
+git commit -m "Merge feature/arm-tuning: use 135° target and add intake binding"
+```
+
+### Common FRC conflict scenarios
+
+| Conflict location | Typical cause | Resolution strategy |
+|---|---|---|
+| `RobotContainer.java` | Two developers added bindings | Merge both sets of bindings — usually both are needed |
+| Subsystem constants | One tuned for practice, one for competition | Keep the competition value, note it in a comment |
+| Auto command selection | Two people changed the default auto | Discuss which auto is correct for the current event |
+| `build.gradle` | Two people added different vendor deps | Keep both dependency entries |
+
+## Recovering from a bad deploy
+
+Three levels of recovery, from fastest to most thorough:
+
+**Level 1: Revert last commit (code is tracked, deploy was the mistake)**
+
+```bash
+# Undo the last commit, keep the changes staged
+git revert HEAD
+./gradlew deploy
+```
+
+**Level 2: Restore a specific file to a previous version**
+
+```bash
+# Restore RobotContainer.java to what it was 2 commits ago
+git checkout HEAD~2 -- src/main/java/frc/robot/RobotContainer.java
+git commit -m "Revert RobotContainer.java to pre-competition state"
+./gradlew deploy
+```
+
+**Level 3: Deploy a tagged competition build directly**
+
+```bash
+# Go back to exactly what worked at the last event
+git checkout v1.1-week1regional
+./gradlew deploy
+# Then return to dev for further work
+git checkout dev
+```
+
+<Warn>
+Never use `git reset --hard` to revert a pushed branch without first checking with the team. It rewrites history and will cause conflicts for anyone who already pulled that branch. Use `git revert` instead — it creates a new commit that undoes the change, keeping history intact.
+</Warn>
+
+## Key takeaways
+
+- Use three branches: `main` (stable), `dev` (active work), `feature/x` (isolated experiments).
+- Always commit before deploying. A commit is a restore point — skipping it means you can't go back.
+- Tag every competition deploy: `git tag -a v1.0-week1 -m "..."` and push the tag.
+- `.gitignore` must exclude `build/`, `.gradle/`, `.wpilib/`, and IDE files. Never ignore `vendordeps/`.
+- In a merge conflict: understand both sides, edit to the correct result, remove all markers, then stage and commit.
+- To recover a bad deploy: `git revert` (safest), `git checkout file` (single file), or `git checkout tag` (full rollback).
+
+## Common confusions
+
+**"git push says 'rejected' after I made commits."** Someone else pushed to the branch since you last pulled. Run `git pull --rebase origin dev`, resolve any conflicts, then push.
+
+**"My feature branch is 20 commits behind dev. Merging is a nightmare."** Merge `dev` into your feature branch regularly: `git merge dev` from the feature branch. Keep branches short-lived — no more than a week ideally.
+
+**"I deployed but now the robot has mystery code."** The roboRIO deploys whatever code `./gradlew deploy` sends — it doesn't check git. Make sure your working tree is clean (`git status` shows nothing modified) before deploying.
+
+**"The WPILib vendor files aren't downloading on a new clone."** That's expected — jars go to the Gradle cache, not to the repo. Run `./gradlew vendordep` or just `./gradlew build` on first clone to fetch them.
+
+## Challenge
+
+<Try>
+Your team has two developers. Dev A added a new auto command to `RobotContainer.java` on the `feature/auto-two-piece` branch. Dev B changed the arm scoring angle from 120° to 135° on `dev`. Both branches have the following lines of `RobotContainer.java` in conflict:
+
+```
+<<<<<<< dev
+    arm = new ArmSubsystem(new ArmIOSparkMax());
+    armBindings.onTrue(new ArmToPositionCommand(arm, 135.0));
+=======
+    arm = new ArmSubsystem(new ArmIOSparkMax());
+    armBindings.onTrue(new ArmToPositionCommand(arm, 120.0));
+    autoChooser.addOption("Two Piece", TwoPieceAuto.build(drive, arm, intake));
+>>>>>>> feature/auto-two-piece
+```
+
+Write the correctly-resolved version of this block. What should the final code contain? Why?
+</Try>
+
+<CodeEditor
+  client:load
+  starterCode={`// Simulate a simple Git log to practice reading history.
+// Each Commit has a hash, message, and branch tag.
+// Find the last "green" commit on 'dev' that predates the bad deploy.
+
+import java.util.ArrayList;
+import java.util.List;
+
+class Commit {
+    String hash;
+    String branch;
+    String message;
+    boolean tested; // true = this commit was tested on robot
+
+    Commit(String hash, String branch, String message, boolean tested) {
+        this.hash = hash;
+        this.branch = branch;
+        this.message = message;
+        this.tested = tested;
+    }
+}
+
+public class GitLogSim {
+
+    static List<Commit> buildLog() {
+        List<Commit> log = new ArrayList<>();
+        // Newest first (like git log)
+        log.add(new Commit("a1b2c3", "dev", "Last-minute PID change before match — UNTESTED", false));
+        log.add(new Commit("d4e5f6", "dev", "Fix arm limit switch inversion",                  true));
+        log.add(new Commit("g7h8i9", "dev", "Add two-piece auto routine",                      true));
+        log.add(new Commit("j0k1l2", "dev", "Tune shooter RPM for high goal",                  true));
+        log.add(new Commit("m3n4o5", "main","v1.0-week1regional — competition deploy",         true));
+        return log;
+    }
+
+    public static void main(String[] args) {
+        List<Commit> log = buildLog();
+
+        // TODO: Find and print the most recent tested commit on 'dev'
+        // (skipping the untested one at the top)
+        System.out.println("Last tested commit on dev:");
+        for (Commit c : log) {
+            // your code here: if c is on dev and tested, print it and break
+        }
+
+        // TODO: Find and print the competition tag commit (message contains "competition")
+        System.out.println("Competition deploy commit:");
+        for (Commit c : log) {
+            // your code here
+        }
+    }
+}`}
+  testCases={[
+    { label: "Last tested dev commit is d4e5f6", expected: "d4e5f6: Fix arm limit switch inversion" },
+    { label: "Competition commit is m3n4o5", expected: "m3n4o5: v1.0-week1regional — competition deploy" },
+  ]}
+  hint="For the first loop: if (c.branch.equals('dev') && c.tested) { System.out.println(c.hash + ': ' + c.message); break; }. For the second: if (c.message.contains('competition')) { System.out.println(c.hash + ': ' + c.message); break; }"
+/>
+
+## What's next
+
+In **Software Engineering Lesson 08**, we'll cover Code Review — how to give and receive constructive feedback on robot code, what to look for in a robot-specific review, and how to use GitHub pull requests to protect your main branch.

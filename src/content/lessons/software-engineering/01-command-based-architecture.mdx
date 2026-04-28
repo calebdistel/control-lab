@@ -1,0 +1,327 @@
+---
+track: software-engineering
+lesson: 1
+title: Command-Based Architecture
+prereqs: [robot-code-06]
+objectives:
+  - Explain why command-based architecture outperforms monolithic robot code for testability and maintainability
+  - Describe the CommandScheduler lifecycle and how it executes commands each loop
+  - Identify the role of RobotContainer as the wiring hub of a robot program
+  - Trace the complete flow from a button press through a trigger to a command executing on a subsystem
+---
+
+import Key from '../../../components/Key.astro';
+import Try from '../../../components/Try.astro';
+import Note from '../../../components/Note.astro';
+import Warn from '../../../components/Warn.astro';
+import CodeTrace from '../../../components/demos/CodeTrace.jsx';
+import Quiz from '../../../components/demos/Quiz.jsx';
+import CodeEditor from '../../../components/demos/CodeEditor.jsx';
+
+## Hook
+
+It's the night before a regional. Your drive code, intake, arm, and shooter are all working individually — but now you need them to cooperate. The arm has to reach position *before* the shooter spins up. The intake should stop when the arm moves. The driver's left trigger should cancel everything if they panic.
+
+You try to wire it together in `teleopPeriodic()`. Four hundred lines later, there are `if` blocks inside `if` blocks, flags that contradict each other, and a bug you cannot reproduce. At competition, the robot stops moving for no apparent reason.
+
+This is the spaghetti problem. Command-based architecture was designed to eliminate it.
+
+## Core concept
+
+<Key>
+Command-based architecture separates *what the robot does* (Commands) from *how the hardware works* (Subsystems). The CommandScheduler coordinates them — enforcing exclusive hardware ownership, running commands in the right order, and canceling conflicts automatically. RobotContainer is the single place where everything is wired together.
+</Key>
+
+## Why monolithic code fails
+
+"Monolithic" means all your robot logic lives in one place — usually crammed into `teleopPeriodic()`. It feels fast to write but breaks down at scale:
+
+**Problem 1: No ownership.** Any code can call `armMotor.set(0.5)` from anywhere. When two things call it in the same loop, the last one wins — silently.
+
+**Problem 2: Impossible to test.** You can't run `teleopPeriodic()` on your laptop because it references real hardware. You'd need a physical robot to run a single test.
+
+**Problem 3: State explosion.** Managing 3 mechanisms with flags requires 2³ = 8 possible states. Managing 5 requires 32. Most are illegal states you never intended to allow.
+
+**Problem 4: Spaghetti.** Urgent bug fix in week 6 of build season. You change one `if` condition and break something completely unrelated. Nobody knows why. Nobody has time to find out.
+
+Command-based solves all four by imposing structure.
+
+## The four-layer architecture
+
+```
+Robot.java          ← entry point, starts the scheduler
+  └── RobotContainer  ← wiring: subsystems + bindings
+        ├── Subsystems  ← hardware ownership + safe interface
+        └── Commands    ← actions that use subsystem methods
+```
+
+Each layer has one job and communicates with the others through a well-defined interface.
+
+## The CommandScheduler
+
+The scheduler is the engine. It runs once every robot loop (every 20 ms) and does three things:
+
+1. **Polls triggers** — checks every registered `Trigger` to see if its condition became true or false this tick.
+2. **Schedules new commands** — if a trigger fires, schedules the associated command (checking requirements first).
+3. **Runs active commands** — calls `execute()` on every currently-running command, then calls `isFinished()` and ends commands that return `true`.
+
+```java
+// Robot.java — the only thing robotPeriodic() needs to do
+@Override
+public void robotPeriodic() {
+    CommandScheduler.getInstance().run();  // drives everything
+}
+```
+
+<Note>
+You never call `execute()` yourself. The scheduler calls it. Your job is to build commands and register them — the scheduler takes it from there.
+</Note>
+
+### Command lifecycle
+
+Every command goes through the same five states:
+
+```
+initialize() → [execute() × N] → isFinished()? → end(interrupted)
+                                      ↑ false         ↑ true or cancelled
+```
+
+| Method | When it runs | Typical use |
+|---|---|---|
+| `initialize()` | Once, when command starts | Reset state, set initial setpoint |
+| `execute()` | Every loop while running | PID update, motor output, sensor read |
+| `isFinished()` | Every loop, checked after execute | Return true when goal is reached |
+| `end(interrupted)` | Once, when done or cancelled | Stop motors, update state |
+
+```java
+public class DriveToDistanceCommand extends CommandBase {
+    private final DriveSubsystem drive;
+    private final double targetMeters;
+
+    public DriveToDistanceCommand(DriveSubsystem drive, double targetMeters) {
+        this.drive = drive;
+        this.targetMeters = targetMeters;
+        addRequirements(drive);  // claim exclusive ownership
+    }
+
+    @Override
+    public void initialize() {
+        drive.resetEncoders();  // start fresh each time
+    }
+
+    @Override
+    public void execute() {
+        double error = targetMeters - drive.getDistanceMeters();
+        drive.arcadeDrive(Math.copySign(0.5, error), 0);
+    }
+
+    @Override
+    public boolean isFinished() {
+        return Math.abs(targetMeters - drive.getDistanceMeters()) < 0.05;
+    }
+
+    @Override
+    public void end(boolean interrupted) {
+        drive.arcadeDrive(0, 0);  // always stop on exit
+    }
+}
+```
+
+<Warn>
+Always stop motors in `end()`. If a command is interrupted mid-run and `end()` doesn't stop the motor, the motor keeps running at its last `execute()` output — indefinitely.
+</Warn>
+
+## RobotContainer as the wiring hub
+
+`RobotContainer` is constructed once at startup. It has three jobs:
+
+1. **Instantiate all subsystems** — every hardware-owning object is created here and stored as fields.
+2. **Assign default commands** — what each subsystem does when no other command is running.
+3. **Bind triggers to commands** — what happens when a driver presses a button or a sensor fires.
+
+```java
+public class RobotContainer {
+    // 1. Subsystems — created once, live forever
+    private final DriveSubsystem drive = new DriveSubsystem();
+    private final IntakeSubsystem intake = new IntakeSubsystem();
+    private final ArmSubsystem arm = new ArmSubsystem();
+
+    // Driver controller
+    private final XboxController driver = new XboxController(0);
+
+    public RobotContainer() {
+        // 2. Default commands
+        drive.setDefaultCommand(
+            new ArcadeDriveCommand(drive,
+                () -> -driver.getLeftY(),
+                () -> driver.getRightX())
+        );
+
+        // 3. Button bindings
+        configureBindings();
+    }
+
+    private void configureBindings() {
+        // A button → run intake while held
+        new JoystickButton(driver, XboxController.Button.kA.value)
+            .whileTrue(new IntakeCommand(intake));
+
+        // B button → arm to score position
+        new JoystickButton(driver, XboxController.Button.kB.value)
+            .onTrue(new ArmToPositionCommand(arm, 120.0));
+
+        // Left bumper → cancel everything (panic button)
+        new JoystickButton(driver, XboxController.Button.kLeftBumper.value)
+            .onTrue(Commands.runOnce(() -> {
+                arm.stopMotor();
+                intake.stopMotor();
+            }, arm, intake));
+    }
+}
+```
+
+<Note>
+Keep `RobotContainer` thin. It should only contain wiring — no logic, no math. If you find yourself writing conditionals inside `configureBindings()`, that logic belongs in a Command or Subsystem.
+</Note>
+
+## The full flow: button press to motor output
+
+Tracing what actually happens when a driver presses the A button:
+
+<CodeTrace
+  client:load
+  variables={{ tick: 0, triggerFired: false, commandState: "idle", motorOutput: 0.0 }}
+  steps={[
+    { code: "robotPeriodic() called (tick 1)",         state: { tick: 1, triggerFired: false, commandState: "idle",        motorOutput: 0.0 }, comment: "scheduler.run() begins" },
+    { code: "scheduler polls all triggers",            state: { tick: 1, triggerFired: false, commandState: "idle",        motorOutput: 0.0 }, comment: "A button = not pressed" },
+    { code: "no new commands scheduled",               state: { tick: 1, triggerFired: false, commandState: "idle",        motorOutput: 0.0 }, comment: "nothing to start" },
+    { code: "default drive command runs",              state: { tick: 1, triggerFired: false, commandState: "idle",        motorOutput: 0.0 }, comment: "joystick drives robot" },
+    { code: "robotPeriodic() called (tick 2)",         state: { tick: 2, triggerFired: true,  commandState: "idle",        motorOutput: 0.0 }, comment: "driver presses A" },
+    { code: "scheduler polls triggers → A = pressed",  state: { tick: 2, triggerFired: true,  commandState: "scheduling",  motorOutput: 0.0 }, comment: "whileTrue trigger fires" },
+    { code: "IntakeCommand.initialize()",              state: { tick: 2, triggerFired: true,  commandState: "running",     motorOutput: 0.0 }, comment: "command starts" },
+    { code: "IntakeCommand.execute()",                 state: { tick: 2, triggerFired: true,  commandState: "running",     motorOutput: 0.8 }, comment: "motor set to 0.8" },
+    { code: "IntakeCommand.isFinished() → false",      state: { tick: 2, triggerFired: true,  commandState: "running",     motorOutput: 0.8 }, comment: "whileTrue: keep going" },
+    { code: "robotPeriodic() called (tick 3)",         state: { tick: 3, triggerFired: false, commandState: "running",     motorOutput: 0.8 }, comment: "driver releases A" },
+    { code: "scheduler polls triggers → A = released", state: { tick: 3, triggerFired: false, commandState: "cancelling",  motorOutput: 0.8 }, comment: "whileTrue: cancel on release" },
+    { code: "IntakeCommand.end(interrupted=true)",     state: { tick: 3, triggerFired: false, commandState: "idle",        motorOutput: 0.0 }, comment: "motor stopped in end()" },
+  ]}
+/>
+
+## Subsystem registration
+
+Subsystems are registered with the scheduler automatically when you extend `SubsystemBase`. The scheduler:
+
+- Calls `periodic()` on every registered subsystem every loop (regardless of what commands are running).
+- Enforces that only one command can "require" a subsystem at a time.
+
+```java
+public class IntakeSubsystem extends SubsystemBase {
+    private final WPI_TalonSRX motor = new WPI_TalonSRX(5);
+
+    public void setSpeed(double speed) {
+        motor.set(speed);
+    }
+
+    public void stopMotor() {
+        motor.stopMotor();
+    }
+
+    @Override
+    public void periodic() {
+        // runs every loop — good for telemetry, bad for control logic
+        SmartDashboard.putNumber("Intake/current", motor.getStatorCurrent());
+    }
+}
+```
+
+<Warn>
+Don't put control logic in `periodic()`. It runs unconditionally, even while a command is running — causing conflicts. Put logic in commands. Put telemetry in `periodic()`.
+</Warn>
+
+## Key takeaways
+
+- Monolithic code in `teleopPeriodic()` leads to spaghetti — no ownership, no testability, state explosion at scale.
+- The CommandScheduler polls triggers, schedules commands, runs `execute()`, and calls `end()` automatically every 20 ms.
+- Commands follow a fixed lifecycle: `initialize()` → `execute()` × N → `isFinished()` → `end(interrupted)`.
+- `RobotContainer` is the wiring hub — it creates subsystems, sets defaults, and binds triggers. It holds no logic.
+- `addRequirements()` gives a command exclusive ownership of a subsystem. The scheduler enforces this.
+- Always stop motors in `end()`. Commands can be interrupted at any time.
+
+## Common confusions
+
+**"My command never runs."** Check two things: (1) Is the trigger binding using the right method — `onTrue` for momentary, `whileTrue` for held? (2) Is there a conflicting default command that requires the same subsystem and was never interrupted?
+
+**"My command runs forever."** `isFinished()` is returning `false` permanently. Add a timeout with `.withTimeout(seconds)` during testing: `new MyCommand(sub).withTimeout(3.0)`.
+
+**"Two subsystems are fighting each other."** You have two commands both requiring the same subsystem. The scheduler cancels the older one. Check whether your default command and an active command both require the same subsystem — that's the most common case.
+
+**"periodic() is running but my command isn't."** `periodic()` always runs. Commands only run when scheduled. They're different things.
+
+## Challenge
+
+<Try>
+You're setting up bindings for a robot with a `ShooterSubsystem` and a `HoodSubsystem`. The driver should: (1) hold the right trigger to spin up the shooter, (2) press Y to move the hood to the long-range position, (3) press X to move the hood to the short-range position. If the driver presses the start button, both the shooter and hood should stop immediately.
+
+Reason through: what trigger method is correct for each binding? What does `addRequirements` need to include for the emergency stop? What does the emergency stop command need to do in its body vs in `end()`?
+</Try>
+
+<CodeEditor
+  client:load
+  starterCode={`// Simulate the scheduler's requirement enforcement.
+// You have two commands both trying to own "subsystemA".
+// The scheduler should cancel the first when the second starts.
+//
+// Complete the simulate() method so that:
+// - Running cmd1 sets ownerName to "cmd1"
+// - Scheduling cmd2 (which requires the same subsystem) cancels cmd1
+//   and sets ownerName to "cmd2"
+// Print the ownerName after each step.
+
+public class SchedulerSim {
+    static String ownerName = "none";
+    static String activeCommand = "none";
+
+    static void scheduleCommand(String name) {
+        // If a command is running, cancel it first (requirement conflict)
+        if (!activeCommand.equals("none")) {
+            System.out.println("Cancelling: " + activeCommand);
+            activeCommand = "none";
+            ownerName = "none";
+        }
+        // Start the new command
+        activeCommand = name;
+        ownerName = name;
+        System.out.println("Started: " + activeCommand);
+    }
+
+    static void cancelAll() {
+        if (!activeCommand.equals("none")) {
+            System.out.println("Cancelled: " + activeCommand);
+        }
+        activeCommand = "none";
+        ownerName = "none";
+    }
+
+    public static void main(String[] args) {
+        // TODO: Schedule "ShootCommand", then schedule "HoodCommand",
+        // then call cancelAll(). Print ownerName after each step.
+        scheduleCommand("ShootCommand");
+        System.out.println("Owner: " + ownerName);
+
+        // Your code here: schedule HoodCommand, print owner
+
+        // Your code here: cancelAll, print owner
+    }
+}`}
+  testCases={[
+    { label: "ShootCommand becomes owner", expected: "Owner: ShootCommand" },
+    { label: "HoodCommand cancels ShootCommand", expected: "Cancelling: ShootCommand" },
+    { label: "HoodCommand becomes owner", expected: "Owner: HoodCommand" },
+    { label: "cancelAll clears owner", expected: "Owner: none" },
+  ]}
+  hint="After scheduling HoodCommand, print ownerName. After cancelAll(), print ownerName. The scheduleCommand and cancelAll methods are already written — just call them in the right order."
+/>
+
+## What's next
+
+In **Software Engineering Lesson 02**, we'll go deep on Subsystem design patterns — specifically how to add an I/O abstraction layer so your control logic can run (and be tested) without physical hardware.

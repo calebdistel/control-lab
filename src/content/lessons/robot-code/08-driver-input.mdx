@@ -1,0 +1,371 @@
+---
+track: robot-code
+lesson: 8
+title: Driver Input
+prereqs: [robot-code-07]
+objectives:
+  - Distinguish CommandXboxController from XboxController and explain when to use each
+  - Read joystick axes and apply a deadband to eliminate stick drift
+  - Implement an expo (cubic) curve to improve fine-control feel
+  - Compare split-arcade and tank drive control schemes and state the tradeoffs
+---
+
+import Key from '../../../components/Key.astro';
+import Try from '../../../components/Try.astro';
+import Note from '../../../components/Note.astro';
+import Warn from '../../../components/Warn.astro';
+import Quiz from '../../../components/demos/Quiz.jsx';
+import CodeEditor from '../../../components/demos/CodeEditor.jsx';
+
+## Hook
+
+The driver pushes the left stick forward and the robot slowly creeps — the stick wasn't fully centered and the tiny residual value is being sent straight to the motors. They correct, overcorrect, and the robot wobbles in a straight line. Meanwhile, pushing the stick 80% forward feels identical to 100% because the response is linear all the way.
+
+Two problems. Two three-line fixes. Deadband and expo curves are the difference between a robot that feels professional and one that drivers fight all match.
+
+## Core concept
+
+<Key>
+Raw joystick values are noisy (deadband) and linearly scaled (poor feel at low speeds). Always filter axis inputs through a deadband function before using them, and optionally shape the response with a curve. These transforms belong in the default drive command, not in the subsystem.
+</Key>
+
+## CommandXboxController vs XboxController
+
+WPILib ships two controller classes. Know which one to use:
+
+| | `XboxController` | `CommandXboxController` |
+|---|---|---|
+| Package | `edu.wpi.first.wpilibj` | `edu.wpi.first.wpilibj2.command.button` |
+| Buttons return | `boolean` (via `getAButton()`) | `Trigger` objects (via `.a()`) |
+| Axes return | `double` (via `getLeftY()`) | `double` (via `getLeftY()`) |
+| Intended use | Simple / non-command code | Command-based projects |
+
+**For axis reads** (driving), both classes work identically — `getLeftY()`, `getRightY()`, `getLeftX()`, `getRightX()` all return `double` in [-1, 1].
+
+**For button bindings** (Lesson 07), always use `CommandXboxController` — it returns `Trigger` objects directly.
+
+In a command-based project, use `CommandXboxController` exclusively. Pass a lambda to your drive command:
+
+```java
+// In RobotContainer
+private final CommandXboxController driver = new CommandXboxController(0);
+
+drive.setDefaultCommand(
+    new ArcadeDriveCommand(
+        drive,
+        () -> -driver.getLeftY(),   // forward/back (negate: up is negative on most controllers)
+        () ->  driver.getRightX()   // turning
+    )
+);
+```
+
+<Note>
+Xbox controllers report Y-axis as negative-up. Negate `getLeftY()` so pushing forward gives a positive value — positive = forward is the WPILib convention for drive methods.
+</Note>
+
+## Axis reading basics
+
+```java
+double leftY  = -driver.getLeftY();   // forward speed, negated
+double rightX =  driver.getRightX();  // turn speed
+double leftX  =  driver.getLeftX();   // strafe (mecanum/swerve)
+double rightY = -driver.getRightY();  // secondary forward axis (tank right side)
+
+// Triggers return 0.0–1.0 (not ±1.0)
+double leftTrig  = driver.getLeftTriggerAxis();
+double rightTrig = driver.getRightTriggerAxis();
+```
+
+## Deadband
+
+A deadband zeroes out small inputs below a threshold. This prevents stick drift (mechanical imperfection that makes a released stick read 0.03 instead of 0.0) from causing slow motor creep.
+
+**Naïve version (don't use this):**
+```java
+if (Math.abs(value) < 0.05) return 0.0;
+else return value;
+```
+
+Problem: there is a discontinuous jump from 0 to ±0.05 the instant the threshold is crossed — the motor suddenly lurches.
+
+**Rescaled version (use this):**
+```java
+public static double deadband(double value, double threshold) {
+    if (Math.abs(value) < threshold) return 0.0;
+    // Rescale so output starts at 0 right after the threshold
+    return (value - Math.signum(value) * threshold) / (1.0 - threshold);
+}
+```
+
+This maps:
+- `|value| < threshold` → `0.0`
+- `|value| = threshold` → `0.0` (continuous)
+- `|value| = 1.0` → `±1.0`
+
+WPILib also provides `MathUtil.applyDeadband(value, threshold)` which does exactly this:
+
+```java
+import edu.wpi.first.math.MathUtil;
+
+double forward = MathUtil.applyDeadband(-driver.getLeftY(), 0.1);
+double turn    = MathUtil.applyDeadband( driver.getRightX(), 0.1);
+```
+
+A deadband of 0.05–0.10 covers typical stick drift. Larger deadbands reduce sensitivity.
+
+## Expo curves
+
+A linear axis feels unresponsive at low values and jumpy at high values. An **expo curve** compresses low-speed inputs and expands high-speed ones, giving finer control near center.
+
+**Simple cubic curve:**
+```java
+// Blend between linear and cubic: alpha=0 is pure linear, alpha=1 is pure cubic
+public static double expoCurve(double value, double alpha) {
+    return alpha * Math.pow(value, 3) + (1.0 - alpha) * value;
+}
+```
+
+Common choices: `alpha = 0.3` for light curve, `alpha = 0.5` for aggressive curve.
+
+**Always apply deadband first, then the curve:**
+```java
+double forward = expoCurve(MathUtil.applyDeadband(-driver.getLeftY(), 0.08), 0.4);
+double turn    = expoCurve(MathUtil.applyDeadband( driver.getRightX(), 0.08), 0.3);
+```
+
+Why deadband first? The curve amplifies small values. Applying the curve before deadbanding turns a 0.03 drift value into `0.4 * 0.03³ + 0.6 * 0.03 ≈ 0.018` — still nonzero.
+
+## Split-arcade drive
+
+Arcade drive uses two axes: one for forward/back speed, one for turning. "Split arcade" puts them on separate sticks:
+
+```java
+// Left stick: throttle, Right stick: turn
+drive.arcadeDrive(forward, turn);
+
+// Or manually for a DifferentialDrive:
+double left  = forward + turn;
+double right = forward - turn;
+// Clamp to [-1, 1]
+left  = MathUtil.clamp(left,  -1.0, 1.0);
+right = MathUtil.clamp(right, -1.0, 1.0);
+```
+
+`DifferentialDrive.arcadeDrive(xSpeed, zRotation)` does the mixing and clamping internally. The second parameter is WPILib's `arcadeDrive` on `DifferentialDrive`.
+
+**Tradeoffs:**
+- Easy for new drivers — intuitive forward/turn mapping.
+- Can't independently control each side.
+- Turning at full speed reduces one side to zero (not always ideal).
+
+## Tank drive
+
+Each stick controls one side of the drivetrain directly:
+
+```java
+double leftSpeed  = MathUtil.applyDeadband(-driver.getLeftY(),  0.08);
+double rightSpeed = MathUtil.applyDeadband(-driver.getRightY(), 0.08);
+
+drive.tankDrive(leftSpeed, rightSpeed);
+```
+
+**Tradeoffs:**
+- More experienced drivers can drive very straight (match left and right by feel).
+- Harder for beginners — requires equal pressure on both sticks to go straight.
+- Favored by experienced FRC drivers on powerful drivetrains.
+
+## Curvature drive
+
+A middle ground: left stick = speed, right stick = curvature (how sharply to arc). At low speeds it can spin in place:
+
+```java
+drive.curvatureDrive(forward, turn, driver.getLeftBumper().getAsBoolean());
+// third param: allowTurnInPlace — lets you spin at zero forward speed
+```
+
+`DifferentialDrive.curvatureDrive` is the WPILib method for this pattern.
+
+## Operator console layout considerations
+
+Real teams use two controllers — driver and operator — with intentional layout:
+
+```
+DRIVER CONTROLLER (port 0)
+  Left stick Y  → forward/back
+  Right stick X → turn
+  Right bumper  → slow mode (scale inputs by 0.4)
+  Left trigger  → reverse intake
+
+OPERATOR CONTROLLER (port 1)
+  Left stick Y  → arm height
+  A             → intake
+  B             → outtake
+  Y             → shooter spin-up
+  Right trigger → fire
+  D-pad up/down → wrist angle
+```
+
+Guidelines:
+- Put high-frequency, time-sensitive actions on the driver controller.
+- Put mechanism control on the operator controller.
+- Use bumpers/triggers for actions that must be held — they're ergonomic under load.
+- Avoid mapping critical actions (e.g., fire) to easy-to-accidentally-press buttons (e.g., start/select).
+- Document the layout in code comments AND on a laminated card taped to the driver station.
+
+## Full drive command example
+
+```java
+public class ArcadeDriveCommand extends CommandBase {
+    private final DriveSubsystem drive;
+    private final DoubleSupplier forwardSupplier;
+    private final DoubleSupplier turnSupplier;
+
+    public ArcadeDriveCommand(DriveSubsystem drive,
+                               DoubleSupplier forward,
+                               DoubleSupplier turn) {
+        this.drive           = drive;
+        this.forwardSupplier = forward;
+        this.turnSupplier    = turn;
+        addRequirements(drive);
+    }
+
+    @Override
+    public void execute() {
+        double fwd = process(forwardSupplier.getAsDouble(), 0.08, 0.4);
+        double trn = process(turnSupplier.getAsDouble(),    0.08, 0.3);
+        drive.arcadeDrive(fwd, trn);
+    }
+
+    /** Apply deadband then expo curve. */
+    private static double process(double raw, double db, double curve) {
+        double v = MathUtil.applyDeadband(raw, db);
+        return curve * Math.pow(v, 3) + (1.0 - curve) * v;
+    }
+
+    @Override
+    public boolean isFinished() {
+        return false; // default command — runs forever
+    }
+
+    @Override
+    public void end(boolean interrupted) {
+        drive.stop();
+    }
+}
+```
+
+<Quiz
+  client:load
+  question="Which axis convention does WPILib use — what does a positive value on getLeftY() mean when the stick is pushed forward?"
+  options={[
+    "Positive — forward is positive",
+    "Negative — forward is negative on most controllers",
+    "It depends on whether you use XboxController or CommandXboxController",
+    "Zero — the axis is always normalized to zero at rest"
+  ]}
+  correct={1}
+  explanation="Most game controllers report Y-axes as negative when pushed forward (screen coordinates: up is negative). WPILib does not invert this by default, so getLeftY() returns a negative value when the stick is pushed forward. Negate it in your command supplier to make positive = forward."
+/>
+
+<Quiz
+  client:load
+  question="Why should you apply the deadband before the expo curve, not after?"
+  options={[
+    "The expo curve requires values in [0, 1] to work correctly",
+    "Applying deadband after the curve still passes nonzero drift values through the curve, producing small nonzero outputs",
+    "MathUtil.applyDeadband only works on uncurved values",
+    "The order does not matter — both produce identical results"
+  ]}
+  correct={1}
+  explanation="The expo curve amplifies but does not zero out small values. A 0.03 drift value passed through a cubic curve still produces a small nonzero output. Deadbanding first eliminates drift before the curve can act on it."
+/>
+
+## Key takeaways
+
+- Use `CommandXboxController` in command-based projects; use `getLeftY()` / `getRightX()` etc. for axis reads.
+- Always negate `getLeftY()` so positive = forward.
+- Apply `MathUtil.applyDeadband()` to eliminate stick drift; use a rescaled deadband so there's no discontinuous jump.
+- Apply an expo curve after the deadband to improve low-speed feel without reducing maximum speed.
+- Split-arcade is beginner-friendly; tank drive rewards experienced operators; curvature drive is a middle ground.
+- Document your controller layout — operators need to know what button does what under match pressure.
+
+## Common confusions
+
+**"My robot creeps slowly even with the stick released."** The stick has physical drift. Add a deadband of at least 0.05 on both axes.
+
+**"The robot turns when I push straight forward."** Check that your left and right motor inversions are correct in the subsystem. Also confirm you're negating only the Y axis, not the X axis.
+
+**"Slow-mode doesn't feel different."** Make sure the scaling multiplier is applied to the final processed value, not the raw value. If you scale before deadband, very small inputs get scaled to even smaller values that are then zeroed by the deadband — effectively doing nothing.
+
+**"arcadeDrive makes a grinding noise when turning at full speed."** At full forward + full turn, one side clips at 1.0. `DifferentialDrive` has a `setMaxOutput()` method and also a squaring option that reduces high-speed sensitivity. Consider `curvatureDrive` for smoother high-speed turns.
+
+## Challenge
+
+<Try>
+Implement a complete input processing function that applies a rescaled deadband and a blended cubic expo curve. The function should be pure Java — no hardware imports. Verify it with the test cases below.
+</Try>
+
+<CodeEditor
+  client:load
+  starterCode={`public class InputProcessor {
+
+    /**
+     * Process a raw joystick axis value:
+     * 1. Apply a rescaled deadband: values within [-threshold, +threshold]
+     *    become 0.0; values outside are rescaled so the output is
+     *    continuous from 0.0 at the threshold to ±1.0 at ±1.0.
+     * 2. Apply a blended cubic expo curve:
+     *    output = alpha * input^3 + (1 - alpha) * input
+     *
+     * @param raw       raw axis value in [-1, 1]
+     * @param threshold deadband threshold (e.g. 0.1)
+     * @param alpha     expo blend factor in [0, 1] (0 = linear, 1 = pure cubic)
+     * @return processed value in [-1, 1]
+     */
+    public static double process(double raw, double threshold, double alpha) {
+        // Step 1: rescaled deadband
+        double db;
+        // TODO: implement deadband
+
+        // Step 2: expo curve
+        // TODO: implement curve
+
+        return 0.0; // replace with your result
+    }
+
+    public static void main(String[] args) {
+        // Within deadband → 0.0
+        System.out.printf("%.4f%n", process(0.05, 0.1, 0.3));   // 0.0000
+
+        // Just outside deadband, alpha=0 (linear) → small positive
+        // rescaled: (0.11 - 0.1) / (1 - 0.1) = 0.1/0.9 ≈ 0.1111
+        // curve alpha=0: 0.1111 (pure linear)
+        System.out.printf("%.4f%n", process(0.11, 0.1, 0.0));   // ~0.1111
+
+        // Full deflection, alpha=0 (linear) → 1.0
+        System.out.printf("%.4f%n", process(1.0, 0.1, 0.0));    // 1.0000
+
+        // Full deflection, alpha=1 (pure cubic) → 1.0
+        System.out.printf("%.4f%n", process(1.0, 0.1, 1.0));    // 1.0000
+
+        // Negative input within deadband → 0.0
+        System.out.printf("%.4f%n", process(-0.08, 0.1, 0.5));  // 0.0000
+
+        // Negative full deflection, alpha=0 → -1.0
+        System.out.printf("%.4f%n", process(-1.0, 0.1, 0.0));   // -1.0000
+    }
+}`}
+  testCases={[
+    { label: "within deadband",           expected: "0.0000" },
+    { label: "just outside, linear",      expected: "0.1111" },
+    { label: "full deflection linear",    expected: "1.0000" },
+    { label: "full deflection cubic",     expected: "1.0000" },
+    { label: "negative within deadband",  expected: "0.0000" },
+    { label: "negative full deflection",  expected: "-1.0000" }
+  ]}
+  hint="Rescaled deadband: if |raw| < threshold return 0, else return (raw - sign(raw)*threshold) / (1 - threshold). Math.signum() gives the sign. Then apply: alpha * v*v*v + (1-alpha) * v."
+/>
+
+## What's next
+
+In **Lesson 09: Autonomous Routines**, we leave teleop behind and look at the autonomous period — how to structure multi-step sequences using `SequentialCommandGroup`, choose between autos with `SendableChooser`, and understand the tradeoffs between time-based and sensor-based autonomous strategies.

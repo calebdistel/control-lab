@@ -1,0 +1,422 @@
+---
+track: fundamentals
+lesson: 12
+title: Interfaces and Inheritance
+prereqs: [fundamentals-11]
+objectives:
+  - Define an interface and explain why it is a contract rather than an implementation
+  - Implement an interface in a concrete class and explain what the compiler enforces
+  - Extend a superclass using `extends` and override a method using `@Override`
+  - Use `super` to call a parent method without completely replacing it
+  - Choose between an interface and inheritance given a real FRC design scenario
+---
+
+import Key from '../../../components/Key.astro';
+import Try from '../../../components/Try.astro';
+import Note from '../../../components/Note.astro';
+import Warn from '../../../components/Warn.astro';
+import CodeTrace from '../../../components/demos/CodeTrace.jsx';
+import Quiz from '../../../components/demos/Quiz.jsx';
+import CodeEditor from '../../../components/demos/CodeEditor.jsx';
+
+## Hook
+
+Your team has a swerve-drive robot this year, but last year's robot was tank drive. The autonomous routines — drive forward two meters, turn, score — are almost identical. You'd love to reuse the auto code without rewriting it for a different drivetrain.
+
+WPILib solves this problem constantly. `SubsystemBase`, `CommandBase`, `Sendable` — these are all tools that let different robots share structure while keeping their own specific behavior. The mechanism underneath is **interfaces and inheritance**, and once you understand it, WPILib stops feeling like magic.
+
+## Core concept
+
+<Key>
+An **interface** is a list of method signatures with no bodies — a contract that says "any class implementing me must provide these methods." **Inheritance** lets one class build on another, reusing and optionally replacing behavior. Both tools let you write code that works with many different objects through a shared type.
+</Key>
+
+## Walk-through: Interfaces
+
+### Defining an interface
+
+An interface is declared with the `interface` keyword. It lists method signatures — name, parameters, return type — but no curly-brace bodies (in almost all cases).
+
+```java
+// Driveable.java
+public interface Driveable {
+    void arcadeDrive(double speed, double rotation);
+    void stop();
+    double getHeading();
+}
+```
+
+This says: whatever class claims to be `Driveable` **must** provide exactly these three methods. Nothing more is specified. There is no code inside the interface itself.
+
+### Implementing an interface
+
+A class opts in to the contract with `implements`:
+
+```java
+// TankDrive.java
+public class TankDrive implements Driveable {
+
+    private double leftPower  = 0.0;
+    private double rightPower = 0.0;
+    private double heading    = 0.0;
+
+    @Override
+    public void arcadeDrive(double speed, double rotation) {
+        leftPower  = speed + rotation;
+        rightPower = speed - rotation;
+        System.out.println("Tank — L:" + leftPower + " R:" + rightPower);
+    }
+
+    @Override
+    public void stop() {
+        leftPower  = 0.0;
+        rightPower = 0.0;
+        System.out.println("Tank stopped.");
+    }
+
+    @Override
+    public double getHeading() {
+        return heading;
+    }
+}
+```
+
+If you leave out any of the three methods, the compiler refuses to build. The `@Override` annotation tells the compiler "I intend to fulfill a contract method here" — if you mistype the name, the compiler catches it immediately.
+
+```java
+// SwerveDrive.java
+public class SwerveDrive implements Driveable {
+
+    private double heading = 0.0;
+
+    @Override
+    public void arcadeDrive(double speed, double rotation) {
+        System.out.println("Swerve — field-relative speed:" + speed + " rot:" + rotation);
+    }
+
+    @Override
+    public void stop() {
+        System.out.println("Swerve stopped (locking wheels).");
+    }
+
+    @Override
+    public double getHeading() {
+        return heading;
+    }
+}
+```
+
+### Using the interface as a type
+
+Here is where the power shows up. Autonomous code can be written against `Driveable` without knowing whether the drivetrain is tank or swerve:
+
+```java
+public class AutonomousRoutine {
+
+    private Driveable drive;
+
+    // Constructor receives any Driveable — tank, swerve, or one we haven't built yet
+    public AutonomousRoutine(Driveable drive) {
+        this.drive = drive;
+    }
+
+    public void driveAndStop() {
+        drive.arcadeDrive(0.5, 0.0);   // works for any Driveable
+        drive.stop();
+    }
+}
+```
+
+You can pass either a `TankDrive` or a `SwerveDrive` and the routine runs unchanged.
+
+```java
+public class Main {
+    public static void main(String[] args) {
+        AutonomousRoutine tankAuto  = new AutonomousRoutine(new TankDrive());
+        AutonomousRoutine swerveAuto = new AutonomousRoutine(new SwerveDrive());
+
+        tankAuto.driveAndStop();
+        System.out.println("---");
+        swerveAuto.driveAndStop();
+    }
+}
+```
+
+Output:
+```
+Tank — L:0.5 R:0.5
+Tank stopped.
+---
+Swerve — field-relative speed:0.5 rot:0.0
+Swerve stopped (locking wheels).
+```
+
+<Note>
+WPILib's `Sendable` interface works exactly this way. Any class implementing `Sendable` can be pushed to SmartDashboard without SmartDashboard knowing what type it is. `Subsystem` is also an interface — your subsystems are concrete implementations of it.
+</Note>
+
+### A class can implement multiple interfaces
+
+Java does not allow extending multiple classes, but a class can implement as many interfaces as needed:
+
+```java
+public class SwerveDrive implements Driveable, Loggable, Sendable {
+    // must provide methods from ALL three interfaces
+}
+```
+
+This is common in WPILib. `SubsystemBase` implements both `Subsystem` and `Sendable`.
+
+---
+
+## Walk-through: Inheritance
+
+### What inheritance is
+
+While an interface is purely a contract, inheritance is about **sharing real code**. One class (`child`) extends another (`parent`), automatically gaining all of its fields and methods. The child can add new things or replace existing ones.
+
+```java
+// Animal.java  (parent / superclass)
+public class Animal {
+    protected String name;
+
+    public Animal(String name) {
+        this.name = name;
+    }
+
+    public void speak() {
+        System.out.println(name + " makes a sound.");
+    }
+}
+```
+
+```java
+// Dog.java  (child / subclass)
+public class Dog extends Animal {
+
+    public Dog(String name) {
+        super(name);  // call the parent constructor
+    }
+
+    @Override
+    public void speak() {
+        System.out.println(name + " barks!");
+    }
+}
+```
+
+```java
+Animal a = new Dog("Rex");
+a.speak();   // prints: Rex barks!
+```
+
+Even though `a` is declared as type `Animal`, the actual object is a `Dog`, so `Dog`'s version of `speak` runs. This is called **polymorphism**.
+
+### The `super` keyword
+
+`super` has two uses:
+
+1. **`super(args)`** — call the parent's constructor. Must be the first line of the child constructor.
+2. **`super.method()`** — call the parent's version of a method from inside the child's override.
+
+```java
+public class FancyDog extends Dog {
+
+    public FancyDog(String name) {
+        super(name);   // calls Dog's constructor, which calls Animal's
+    }
+
+    @Override
+    public void speak() {
+        super.speak();                          // prints: Rex barks!
+        System.out.println("(very politely)"); // adds extra behavior
+    }
+}
+```
+
+Use `super.method()` when you want to extend a parent method rather than completely replace it.
+
+### FRC: SubsystemBase
+
+In WPILib, every subsystem you write extends `SubsystemBase`:
+
+```java
+import edu.wpi.first.wpilibj2.command.SubsystemBase;
+
+public class DriveSubsystem extends SubsystemBase {
+
+    private final TankDrive drive = new TankDrive();
+
+    // SubsystemBase already provides register(), getName(), initSendable()
+    // We only need to add robot-specific behavior.
+
+    public void arcadeDrive(double speed, double rotation) {
+        drive.arcadeDrive(speed, rotation);
+    }
+
+    @Override
+    public void periodic() {
+        // SubsystemBase declares periodic() — we override it to add our logic.
+        // super.periodic() is called automatically by the scheduler;
+        // we don't need to call it explicitly here.
+        System.out.println("DriveSubsystem periodic — heading: " + drive.getHeading());
+    }
+}
+```
+
+`SubsystemBase` takes care of registering your subsystem with the command scheduler, implementing `Sendable`, and managing the subsystem name. You inherit all of that for free and just add your robot-specific code.
+
+<Note>
+`SubsystemBase` itself implements the `Subsystem` interface. So `DriveSubsystem` is both a subclass of `SubsystemBase` and an implementation of `Subsystem` — you get both at once through the inheritance chain.
+</Note>
+
+---
+
+## Interface vs. Inheritance: choosing the right tool
+
+| Situation | Use |
+|-----------|-----|
+| Multiple unrelated classes need to share a type, but have completely different internals | Interface |
+| Two classes are genuinely "is-a" variations of the same thing | Inheritance (`extends`) |
+| You need to implement more than one "kind" of behavior simultaneously | Interface (implement many) |
+| You want to share real, reusable code — not just a contract | Inheritance |
+| A framework needs to call your methods without knowing your type | Interface |
+
+A rule of thumb: if you find yourself writing `extends` but you're not reusing any of the parent's code, ask whether an interface is the cleaner fit.
+
+<Warn>
+Avoid deep inheritance chains (A extends B extends C extends D). They become very hard to reason about. WPILib keeps its chains shallow — usually one level of `extends SubsystemBase` is enough.
+</Warn>
+
+---
+
+## Interactive trace
+
+<CodeTrace
+  client:load
+  variables={{ type: "?", speed: 0.5, rotation: 0.0, output: "" }}
+  steps={[
+    {
+      code: "Driveable d = new TankDrive();",
+      state: { type: "TankDrive", speed: 0.5, rotation: 0.0, output: "" },
+      comment: "d holds a TankDrive, typed as Driveable"
+    },
+    {
+      code: "d.arcadeDrive(0.5, 0.0);",
+      state: { type: "TankDrive", speed: 0.5, rotation: 0.0, output: "Tank — L:0.5 R:0.5" },
+      comment: "TankDrive's version runs — Java looks at the real object"
+    },
+    {
+      code: "d = new SwerveDrive();",
+      state: { type: "SwerveDrive", speed: 0.5, rotation: 0.0, output: "" },
+      comment: "d now holds a SwerveDrive — same variable, new object"
+    },
+    {
+      code: "d.arcadeDrive(0.5, 0.0);",
+      state: { type: "SwerveDrive", speed: 0.5, rotation: 0.0, output: "Swerve — field-relative speed:0.5 rot:0.0" },
+      comment: "SwerveDrive's version runs — the interface variable works for either"
+    }
+  ]}
+/>
+
+---
+
+## Key takeaways
+
+- An interface is a **contract**: it lists method signatures the implementing class must provide.
+- Inheritance (`extends`) lets a class **reuse code** from a parent and optionally replace behavior with `@Override`.
+- `super(args)` calls the parent constructor; `super.method()` calls the parent version of a method.
+- A class can only `extend` one parent but can `implement` many interfaces.
+- WPILib uses both constantly: `Sendable` and `Subsystem` are interfaces; `SubsystemBase` and `CommandBase` are base classes you extend.
+- Polymorphism means code written against an interface or supertype works with any implementing class.
+
+---
+
+## Common confusions
+
+**"Why can't I just put the code directly in the interface?"**
+
+Modern Java (9+) allows `default` methods in interfaces, but they're the exception. An interface's main job is to describe *what* a class does, not *how*. If you put code in the interface you've blurred that line — use a base class instead.
+
+**"I added `@Override` but the compiler says there's nothing to override."**
+
+Either the method name is misspelled, the parameter types don't match exactly, or the parent class/interface doesn't actually declare that method. `@Override` is your safety net — when it fails, it tells you the problem before you ship.
+
+**"When I call `super.periodic()` inside my override, does the scheduler call `periodic` twice?"**
+
+No. The scheduler calls `periodic()` once. Inside that one call, your override runs. If you include `super.periodic()`, the parent's version also runs as part of the same call. You are in control of whether and when the parent's body executes.
+
+**"Can I use an interface variable to call a method that only exists on the concrete class?"**
+
+Not without a cast. If `d` is declared as `Driveable`, you can only call the three methods defined in `Driveable`. To call a `SwerveDrive`-specific method, cast first: `((SwerveDrive) d).lockWheels()`. In practice, if you need to do this often, reconsider your design.
+
+---
+
+## Challenge
+
+<Try>
+Define a `Scoreable` interface with two methods: `void score()` and `boolean isReady()`. Then create two classes — `Shooter` and `Intake` — that implement it. Write a helper method `attemptScore(Scoreable s)` that prints `"Scoring!"` if `s.isReady()` is true, or `"Not ready"` otherwise. Call it with both objects.
+</Try>
+
+<CodeEditor
+  client:load
+  starterCode={`public class Main {
+
+    // 1. Define interface Scoreable with score() and isReady()
+    interface Scoreable {
+        void score();
+        boolean isReady();
+    }
+
+    // 2. Implement Scoreable in Shooter (always ready)
+    static class Shooter implements Scoreable {
+        @Override
+        public void score() {
+            System.out.println("Shooter fired!");
+        }
+
+        @Override
+        public boolean isReady() {
+            return true;
+        }
+    }
+
+    // 3. Implement Scoreable in Intake (never ready — still spinning up)
+    static class Intake implements Scoreable {
+        @Override
+        public void score() {
+            System.out.println("Intake scored!");
+        }
+
+        @Override
+        public boolean isReady() {
+            return false;
+        }
+    }
+
+    // 4. Helper method — works for ANY Scoreable
+    static void attemptScore(Scoreable s) {
+        if (s.isReady()) {
+            System.out.println("Scoring!");
+            s.score();
+        } else {
+            System.out.println("Not ready");
+        }
+    }
+
+    public static void main(String[] args) {
+        attemptScore(new Shooter());
+        attemptScore(new Intake());
+    }
+}`}
+  testCases={[
+    { label: "Shooter is ready, Intake is not", expected: "Scoring!\nShooter fired!\nNot ready" }
+  ]}
+  hint="The key is that attemptScore accepts a Scoreable — it doesn't care whether it's a Shooter or Intake. Java calls the right isReady() and score() based on the actual object type."
+/>
+
+---
+
+## What's next
+
+Now that you understand how Java organizes types through interfaces and inheritance, we need to talk about what happens when things go wrong at runtime. **Lesson 13 — Error Handling** covers exceptions: what they are, how to catch them, and how to write defensive code so your robot doesn't crash mid-match.

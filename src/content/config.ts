@@ -4,14 +4,11 @@ const lessons = defineCollection({
   type: 'content',
   schema: z.object({
     track: z.enum([
-      'frc-intro',       // what FRC is, hardware, how code runs
-      'fundamentals',    // core programming concepts
-      'robot-code',      // WPILib, subsystems, commands
-      'motion-control',  // PID, feedforward, profiling
-      'sensing-vision',  // PhotonVision, pose estimation
-      'autonomy',        // PathPlanner, auto routines
-      'swerve',          // swerve kinematics & tuning
-      'tooling',         // git, debugging, AdvantageScope
+      'frc-intro',           // what FRC is, hardware, development workflow
+      'fundamentals',        // core programming concepts
+      'robot-code',          // WPILib, subsystems, commands, actuators
+      'control-systems',     // PID, feedforward, motion profiling, state space
+      'software-engineering', // architecture patterns, testing, tooling
     ]),
     lesson: z.number().int().positive(),
     title: z.string(),

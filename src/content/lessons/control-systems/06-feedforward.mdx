@@ -1,0 +1,286 @@
+---
+track: control-systems
+lesson: 6
+title: "Feedforward"
+prereqs: [control-systems-05]
+objectives:
+  - Explain how feedforward predicts required output without waiting for error to develop
+  - Identify the four feedforward constants (kS, kV, kA, kG) and describe what physical phenomenon each compensates
+  - Compute feedforward output for a simple motor given kS, kV, and a desired velocity
+  - Use WPILib's SimpleMotorFeedforward class to generate feedforward commands
+---
+
+import Key from '../../../components/Key.astro';
+import Try from '../../../components/Try.astro';
+import Note from '../../../components/Note.astro';
+import Warn from '../../../components/Warn.astro';
+import CodeTrace from '../../../components/demos/CodeTrace.jsx';
+import Quiz from '../../../components/demos/Quiz.jsx';
+import CodeEditor from '../../../components/demos/CodeEditor.jsx';
+
+## Hook
+
+You want your shooter flywheel at 3500 RPM. With pure PID, here's what happens: the flywheel is at 0 RPM, the error is 3500 RPM, the controller applies some fraction of that as voltage, the wheel spins up, the error shrinks, the output shrinks... and after several seconds it finally settles near 3500 RPM.
+
+The controller was learning by trial and error, every loop cycle, for those entire seconds.
+
+But you already know what voltage it takes to spin a motor at 3500 RPM. You can calculate it from the motor's characteristics — voltage per RPM is a constant you can measure once. Why not just apply that voltage immediately, from the very first loop cycle?
+
+That's feedforward. Instead of reacting to error, you predict the required output. The PID controller then only handles the small residual error that physics can't perfectly predict.
+
+## Core concept
+
+<Key>
+Feedforward computes a predicted output based on the desired state (setpoint) and known physics of the mechanism, without any sensor measurement. It acts immediately, eliminating most of the error before the feedback loop even starts working. The four common feedforward constants are kS (static friction), kV (velocity), kA (acceleration), and kG (gravity for arms and elevators).
+</Key>
+
+### The feedforward idea
+
+A feedback controller asks: "Where am I, and where should I be?"
+
+A feedforward controller asks: "Where do I want to go, and what should I command to get there, based on physics?"
+
+These are complementary questions. Feedforward does the heavy lifting based on a model of the system. Feedback corrects the small residual error that the model doesn't perfectly capture.
+
+Feedforward does not use sensor measurements. It looks only at the desired setpoint (or desired velocity, desired acceleration) and applies a pre-calculated output.
+
+### The feedforward equation for a motor
+
+For a DC motor driving a mechanism, the voltage needed to achieve a desired velocity is approximately:
+
+`V = kS * sign(velocity) + kV * velocity + kA * acceleration`
+
+Where:
+- `kS` = static friction compensation (volts needed to overcome static friction)
+- `kV` = velocity gain (volts per unit velocity needed to maintain constant speed)
+- `kA` = acceleration gain (volts per unit acceleration needed to speed up or slow down)
+- `sign(velocity)` = +1 if moving forward, -1 if moving backward (applies friction in the correct direction)
+
+For constant-velocity operation (acceleration = 0):
+
+`V = kS * sign(velocity) + kV * velocity`
+
+### kS: static friction compensation
+
+Every mechanism has static friction — the force you have to overcome before the mechanism starts moving at all. A motor at 0% output on a gearbox with significant friction may not move at all.
+
+kS is the minimum voltage needed to make the mechanism move. It's measured by slowly increasing voltage from zero until the mechanism just starts to move.
+
+Typical values in FRC: 0.1 to 1.0 volts, depending on gearbox and mechanism weight.
+
+```
+kS effect: without kS, the mechanism doesn't start moving until
+the PID error builds up enough to push through friction.
+With kS: the mechanism starts moving immediately.
+```
+
+### kV: velocity feedforward
+
+kV is the voltage needed per unit of velocity to maintain constant speed. It accounts for back-EMF (the motor generating its own counter-voltage proportional to speed).
+
+For a motor with a free speed of 5676 RPM (NEO motor) at 12 V:
+
+`kV ≈ 12V / 5676 RPM ≈ 0.00211 V/RPM`
+
+At 3000 RPM with kV = 0.00211: the velocity term contributes 0.00211 * 3000 = 6.33 V. Combined with a 12 V supply, that's 52.75% output — which is roughly what a NEO actually needs at 3000 RPM under no load.
+
+In practice, you measure kV empirically using SysId (see below) rather than computing it from motor specs, because gearbox losses, friction, and robot-specific factors change the effective value.
+
+### kA: acceleration feedforward
+
+kA is the voltage needed per unit of acceleration. It accounts for the inertia of the mechanism — speeding up a heavy flywheel requires more voltage than maintaining its current speed.
+
+For many FRC velocity controllers (flywheels, drivetrain), kA is often small enough to ignore if you're not running a motion profile. You'd typically only include kA when following a trajectory where acceleration is explicitly commanded.
+
+### kG: gravity compensation
+
+For arms and elevators, gravity exerts a constant force that the motor must overcome. The required compensation depends on mechanism geometry:
+
+**Elevator (constant gravity regardless of position):**
+
+`kG_elevator = voltage needed to hold the elevator still at any height`
+
+```java
+// Elevator feedforward
+double ffVolts = kS * Math.signum(velocity) + kG + kV * velocity;
+```
+
+**Arm (gravity varies with angle — cosine component):**
+
+`kG_arm(theta) = kG * cos(theta)`
+
+At 90 degrees (horizontal), full kG applies. At 0 or 180 degrees (vertical), gravity has no torque and the term is zero.
+
+```java
+// Arm feedforward
+double angleRad = Units.degreesToRadians(armAngleDegrees);
+double ffVolts = kS * Math.signum(velocity) + kG * Math.cos(angleRad) + kV * velocity;
+```
+
+This is why arms behave differently at different angles — a P controller that works at 45 degrees often overshoots at 90 degrees (where gravity helps it accelerate) and undershoots at 0 degrees (where gravity works against it). Feedforward solves this inherently.
+
+### WPILib SimpleMotorFeedforward
+
+WPILib provides SimpleMotorFeedforward for mechanisms without gravity (flywheels, drivetrain wheels):
+
+```java
+import edu.wpi.first.math.controller.SimpleMotorFeedforward;
+
+// Units must be consistent: if velocity is in rotations/second,
+// kS is in volts, kV is in volts*seconds/rotation, kA is in volts*seconds²/rotation
+SimpleMotorFeedforward ff = new SimpleMotorFeedforward(kS, kV, kA);
+
+// In periodic():
+double ffVolts = ff.calculate(desiredVelocityRPS); // returns volts
+// Or with acceleration:
+double ffVolts = ff.calculate(desiredVelocityRPS, desiredAcceleration);
+```
+
+For arms, use WPILib's ArmFeedforward:
+
+```java
+import edu.wpi.first.math.controller.ArmFeedforward;
+
+ArmFeedforward armFF = new ArmFeedforward(kS, kG, kV, kA);
+// positionRadians is the current or desired arm angle
+double ffVolts = armFF.calculate(positionRadians, velocityRadians);
+```
+
+For elevators, use ElevatorFeedforward:
+
+```java
+import edu.wpi.first.math.controller.ElevatorFeedforward;
+
+ElevatorFeedforward elevFF = new ElevatorFeedforward(kS, kG, kV, kA);
+double ffVolts = elevFF.calculate(desiredVelocityMetersPerSecond);
+```
+
+### Measuring feedforward constants with SysId
+
+WPILib provides SysId (System Identification) — a tool that drives the mechanism with known voltage profiles and records the response, then computes kS, kV, and kA automatically.
+
+The workflow:
+1. Install the WPILib SysId routines in your robot code
+2. Deploy and run the quasistatic and dynamic tests
+3. Load the resulting log file into the SysId analysis tool
+4. Read off the computed constants
+
+This is far more accurate than guessing or manual estimation. For competition robots, SysId-characterized constants dramatically improve feedforward accuracy.
+
+<Note>
+SysId constants are in voltage-based units (volts per unit velocity, etc.), so pass voltages to the motor controller rather than normalized [-1, 1] values when using feedforward: `motor.setVoltage(ffVolts + pidOutput * 12.0)` or use `setVoltage()` directly. WPILib's motor controller setVoltage() method handles the normalization internally.
+</Note>
+
+### Feedforward without SysId: manual estimation
+
+If you don't have time for SysId:
+
+1. **kS**: Slowly increase motor output from 0 until the mechanism just barely starts moving. That output value times 12 V is approximately kS.
+
+2. **kV**: Command a constant velocity and note the steady-state motor output needed to maintain it. `kV = output_volts / velocity`.
+
+3. **kG** (elevator): Find the output needed to hold the elevator stationary at the middle of its range. That output times 12 V is kG.
+
+4. **kG** (arm): Find the output needed to hold the arm horizontal (90 degrees). That output times 12 V is kG.
+
+5. **kA**: Start at 0 and ramp to maximum velocity, note how much extra voltage is needed during the ramp phase. kA is harder to estimate manually — often set to 0 and added only if needed.
+
+<Warn>
+Manual feedforward estimation is approximate. If your robot behavior at competition differs significantly from testing (different battery, different load), re-run SysId or re-estimate manually. kV in particular changes measurably if the mechanism's inertia changes (e.g., adding a game piece to an arm).
+</Warn>
+
+## Key takeaways
+
+- Feedforward predicts required output from the desired state, without using sensor measurement. It acts before error develops.
+- The four constants: **kS** (static friction), **kV** (velocity gain), **kA** (acceleration gain), **kG** (gravity for arms/elevators).
+- `FF output = kS * sign(v) + kV * v + kA * a` for simple motors. Elevators add kG directly; arms add `kG * cos(angle)`.
+- WPILib classes: `SimpleMotorFeedforward`, `ArmFeedforward`, `ElevatorFeedforward`. All return volts.
+- Use SysId to characterize kS, kV, kA. It's worth the 30 minutes — the result dramatically outperforms guessing.
+- Feedforward is not a replacement for PID — it handles predictable behavior, PID handles residual error from disturbances and model inaccuracy.
+
+## Common confusions
+
+**"If feedforward is so good, why do I still need PID?"**
+
+Feedforward only works as well as your model. Game pieces entering/leaving mechanisms, battery voltage fluctuations, temperature, and mechanical wear all cause the real system to deviate from the model. PID corrects these residual deviations. Feedforward does 90% of the work; PID handles the remaining 10%.
+
+**"My kS value makes the arm drift when I don't want it to move."**
+
+kS is multiplied by `sign(velocity)`. If the desired velocity is zero, kS should contribute zero. If your arm is drifting, the velocity command is not actually zero, or kS is being applied regardless of velocity. Check that kS * sign(0) = 0 in your implementation (it should, since sign(0) = 0 in WPILib Math.signum).
+
+**"SysId gave me a kV that seems wrong for my mechanism."**
+
+SysId's kV assumes the units you configured. If your encoder reports rotations and you configured SysId for rotations, but then use the constant with RPM, the value will be wrong by a factor of 60. Always double-check unit consistency.
+
+**"My feedforward works at constant speed but overshoots when accelerating."**
+
+This is the kA term's job. During acceleration, extra voltage is needed to overcome inertia. Without kA, you'll undershoot during acceleration and overshoot once you reach target velocity (because you built up momentum). Add kA from SysId or estimate it manually.
+
+## Challenge
+
+<Try>
+Compute the feedforward output voltage for three operating conditions using the formula:
+
+`V = kS * sign(v) + kV * v`
+
+(kA is zero — constant velocity)
+
+Given: kS = 0.25 V, kV = 0.002 V/RPM
+
+Compute for: (a) desired velocity = 3000 RPM forward, (b) desired velocity = 1500 RPM forward, (c) desired velocity = 0 RPM (robot is idle).
+</Try>
+
+<CodeEditor
+  client:load
+  starterCode={`public class FeedforwardChallenge {
+    static double kS = 0.25; // volts
+    static double kV = 0.002; // volts per RPM
+
+    // Compute feedforward voltage: kS * sign(velocity) + kV * velocity
+    // Math.signum(x) returns -1, 0, or 1
+    public static double computeFF(double velocityRPM) {
+        // TODO: implement the feedforward equation
+        return 0.0;
+    }
+
+    public static void main(String[] args) {
+        // Case A: 3000 RPM forward
+        double vA = computeFF(3000.0);
+        System.out.printf("3000 RPM forward: FF = %.3f V%n", vA);
+
+        // Case B: 1500 RPM forward
+        double vB = computeFF(1500.0);
+        System.out.printf("1500 RPM forward: FF = %.3f V%n", vB);
+
+        // Case C: 0 RPM (idle)
+        double vC = computeFF(0.0);
+        System.out.printf("0 RPM idle:       FF = %.3f V%n", vC);
+
+        // At 3000 RPM, what fraction of 12V supply is the FF term?
+        System.out.printf("FF at 3000 RPM as %% of 12V: %.1f%%%n", (vA / 12.0) * 100.0);
+    }
+}`}
+  testCases={[
+    { label: "3000 RPM forward gives 6.250 V", expected: "3000 RPM forward: FF = 6.250 V" },
+    { label: "1500 RPM forward gives 3.250 V", expected: "1500 RPM forward: FF = 3.250 V" },
+    { label: "0 RPM idle gives 0.000 V", expected: "0 RPM idle:       FF = 0.000 V" }
+  ]}
+  hint="V = kS * Math.signum(velocity) + kV * velocity. For 3000 RPM: 0.25*1 + 0.002*3000 = 0.25 + 6.0 = 6.25 V. For 0 RPM: Math.signum(0) = 0, so 0.25*0 + 0 = 0 V."
+/>
+
+<Quiz
+  client:load
+  question="An arm is at 0 degrees (pointing straight down, vertical). The desired velocity is 0 (holding still). The ArmFeedforward has kG = 1.2 V. How much feedforward voltage does the gravity term contribute at this position?"
+  options={[
+    "1.2 V — kG always contributes its full value",
+    "0.0 V — cos(0 degrees) = 1.0, so the full 1.2 V is applied",
+    "0.0 V — cos(0 degrees for vertical arm) = 0, gravity has no torque at this angle",
+    "0.6 V — half of kG at the midpoint"
+  ]}
+  correct={2}
+  explanation="When the arm points straight down (0 degrees in the WPILib arm convention where 0 = vertical down), gravity acts directly along the arm's axis. It pulls the arm straight down and creates no rotational torque. cos(0) = 1 in math, but WPILib's ArmFeedforward uses the angle from horizontal, so at straight-down (negative 90 degrees from horizontal), cos(-90°) = 0. At horizontal (90 degrees from horizontal), cos(90°) = 0 too — wait, at horizontal cos(0 from horizontal) = cos(0) = 1, which is maximum gravity torque. The arm convention matters — always check WPILib docs for your version's angle reference frame."
+/>
+
+## What's next
+
+You now have two separate tools: feedforward (predicts what output is needed based on physics) and PID feedback (corrects residual error from disturbances). The next lesson shows how to combine them into a single architecture — the output is `FF + PID` — and why this combination is dramatically better than either alone. You'll see how FF does the heavy lifting while PID just handles trim corrections.

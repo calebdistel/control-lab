@@ -1,0 +1,342 @@
+---
+track: control-systems
+lesson: 11
+title: Arm Position Control
+prereqs: [control-systems-07]
+objectives:
+  - Compute the gravity feedforward voltage for an arm at any angle using kG * cos(angle)
+  - Explain why an arm requires an angle-dependent feedforward while an elevator does not
+  - Read arm angle from an absolute encoder and convert to radians
+  - Implement soft limits in code to prevent the arm from exceeding safe mechanical bounds
+  - Apply ProfiledPIDController with ArmFeedforward for smooth, safe arm setpoint changes
+---
+
+import Key from '../../../components/Key.astro';
+import Try from '../../../components/Try.astro';
+import Note from '../../../components/Note.astro';
+import Warn from '../../../components/Warn.astro';
+import CodeTrace from '../../../components/demos/CodeTrace.jsx';
+import Quiz from '../../../components/demos/Quiz.jsx';
+import CodeEditor from '../../../components/demos/CodeEditor.jsx';
+
+## Hook
+
+You perfectly tune your arm's PID at the horizontal position. It holds angle beautifully. Then you move it to 80° (nearly vertical above the pivot) and it crashes into the frame stop — the same kP that was fine at 0° produced a huge correction force when the arm barely needed any voltage to stay up. The problem is that gravity's pull on the arm changes with angle, and your feedforward was only right at one position. Arm control requires feedforward that adapts to the arm's current orientation.
+
+## Core concept
+
+<Key>
+An arm pivots around a fixed point. The torque gravity applies to the arm equals the arm's weight times the horizontal distance from the pivot to the arm's center of mass. That horizontal distance is proportional to cos(angle), so the gravity feedforward voltage is: kG * cos(angle), where angle is measured from horizontal.
+</Key>
+
+## Why cos(angle)?
+
+Imagine the arm as a rigid rod pivoting at one end. When the arm is horizontal (0°), gravity pulls straight down on the center of mass — at maximum leverage. When the arm is vertical pointing up (90°), gravity pulls straight down through the pivot — zero torque. When the arm is vertical pointing down (−90°), gravity again pulls through the pivot with zero torque, but in the direction that would pull the arm downward.
+
+```
+Torque due to gravity = m * g * L/2 * cos(angle)
+```
+
+Where:
+- `m` = arm mass (kg)
+- `g` = 9.81 m/s^2
+- `L` = arm length (m)
+- `angle` = 0° at horizontal, 90° straight up, −90° straight down
+
+This is why the feedforward uses `cos(angle)` — it directly encodes the varying leverage of gravity as the arm rotates.
+
+```
+gravityFF = kG * cos(angle)
+```
+
+`kG` is a lumped constant that captures mass, gravity, arm length, gear ratio, and motor efficiency — you either measure it via SysId or tune it by hand.
+
+### Contrast with the elevator
+
+An elevator moves straight up and down. Gravity always opposes the motion with the same force regardless of height. There is no cos() — gravity feedforward is simply `kG` (a constant) at all positions. This is the key structural difference between elevator and arm feedforward.
+
+## The ArmFeedforward equation
+
+WPILib's `ArmFeedforward` computes:
+
+```
+voltage = kS * sign(velocity) + kG * cos(position) + kV * velocity + kA * acceleration
+```
+
+All in one class:
+
+```java
+// kS=0.1, kG=0.5, kV=1.8, kA=0.04 (all in SI: volts, radians, seconds)
+ArmFeedforward ff = new ArmFeedforward(0.1, 0.5, 1.8, 0.04);
+
+// For a setpoint state (angle in radians, velocity in rad/s)
+double voltage = ff.calculate(setpointPositionRad, setpointVelocityRadPerSec);
+```
+
+<Warn>
+`ArmFeedforward.calculate()` requires BOTH position (angle in radians) and velocity. Unlike `ElevatorFeedforward.calculate()` which only needs velocity. Passing only velocity to an ArmFeedforward will silently assume position = 0, making gravity compensation wrong everywhere except horizontal.
+</Warn>
+
+## Angle measurement with an absolute encoder
+
+Relative (incremental) encoders are not suitable for arms — they lose their zero position every time the robot is powered on. You need an **absolute encoder** that remembers its angle across power cycles.
+
+Common choices in FRC:
+- **REV Through Bore Encoder** — attaches directly to a shaft, outputs PWM or duty cycle
+- **CTRE CANCoder** — CAN-connected, high resolution
+- **REV Absolute Encoder** (built into NEO motor connector)
+
+### Reading a Through Bore Encoder via DutyCycle
+
+```java
+DutyCycleEncoder absEncoder = new DutyCycleEncoder(0);  // DIO port 0
+
+// getAbsolutePosition() returns 0.0 to 1.0 (full rotation)
+double rotations = absEncoder.getAbsolutePosition();  // 0.0–1.0
+
+// Convert to radians
+double radians = rotations * 2 * Math.PI;
+
+// Apply offset so 0 rad = horizontal arm position
+double offset = 1.34;  // radians from encoder zero to horizontal — measure this
+double angleRad = radians - offset;
+```
+
+### Reading a CANCoder
+
+```java
+CANcoder cancoder = new CANcoder(6);
+double degrees = cancoder.getAbsolutePosition().getValueAsDouble() * 360.0;
+double radians = Math.toRadians(degrees);
+```
+
+Always apply an offset so your code's zero angle matches your physical reference (horizontal = 0 rad is the most common convention, matching the `kG * cos(angle)` formula).
+
+## PID for position
+
+A PID controller computes motor voltage proportional to the error between current angle and target angle:
+
+```java
+PIDController pid = new PIDController(kP, 0, 0);
+double pidVolts = pid.calculate(currentAngleRad, targetAngleRad);
+```
+
+The PID provides the corrective term. The feedforward provides the model-based term. Both are summed:
+
+```java
+double ffVolts  = ff.calculate(targetAngleRad, targetVelocityRadPerSec);
+double pidVolts = pid.calculate(currentAngleRad, targetAngleRad);
+motor.setVoltage(ffVolts + pidVolts);
+```
+
+Notice the feedforward uses the **target** angle — where you want to be. The PID uses **current** angle — where you are. This separation is intentional: feedforward is predictive, PID is reactive.
+
+## Soft limits
+
+A hard limit is a physical stop (bolt, tube, bumper bracket) that the arm crashes into. A soft limit is code that prevents the arm from ever reaching the hard limit.
+
+### Clamp the output voltage
+
+```java
+double rawVoltage = ffVolts + pidVolts;
+double clampedVoltage = MathUtil.clamp(rawVoltage, -10.0, 10.0);
+motor.setVoltage(clampedVoltage);
+```
+
+### Check angle before applying output
+
+```java
+double minAngleRad = Math.toRadians(-15);  // 15° below horizontal
+double maxAngleRad = Math.toRadians(120);  // 120° above horizontal
+
+double currentAngle = getAngleRad();
+
+// If at the limit and trying to go further, cut voltage in that direction
+if (currentAngle <= minAngleRad && voltage < 0) voltage = 0;
+if (currentAngle >= maxAngleRad && voltage > 0) voltage = 0;
+
+motor.setVoltage(voltage);
+```
+
+### Hard motor controller limits
+
+Both Spark and Talon support hardware soft limits that cut motor output at configured encoder positions:
+
+```java
+// CANSparkMax
+motor.setSoftLimit(CANSparkMax.SoftLimitDirection.kForward, (float) maxEncoderRot);
+motor.setSoftLimit(CANSparkMax.SoftLimitDirection.kReverse, (float) minEncoderRot);
+motor.enableSoftLimit(CANSparkMax.SoftLimitDirection.kForward, true);
+motor.enableSoftLimit(CANSparkMax.SoftLimitDirection.kReverse, true);
+```
+
+Motor controller soft limits act as a safety net even if your robot code crashes or behaves unexpectedly.
+
+## ProfiledPIDController for smooth arm moves
+
+Commanding a step change in target angle causes the arm to accelerate as fast as the PID allows — which can be violent. Use `ProfiledPIDController` to constrain acceleration and velocity:
+
+```java
+ProfiledPIDController controller = new ProfiledPIDController(
+    2.0, 0, 0,
+    new TrapezoidProfile.Constraints(
+        Math.PI,        // max velocity: pi rad/s
+        2 * Math.PI     // max acceleration: 2*pi rad/s^2
+    )
+);
+controller.setTolerance(Math.toRadians(2));  // within 2 degrees
+
+// Set the arm goal
+controller.setGoal(new TrapezoidProfile.State(targetAngleRad, 0.0));
+
+// In periodic
+double currentAngle = getAngleRad();
+double pidVolts = controller.calculate(currentAngle);
+TrapezoidProfile.State sp = controller.getSetpoint();
+
+// ArmFeedforward needs profiled position AND velocity
+double ffVolts = ff.calculate(sp.position, sp.velocity);
+
+motor.setVoltage(MathUtil.clamp(pidVolts + ffVolts, -10, 10));
+```
+
+## Full arm subsystem
+
+```java
+public class ArmSubsystem extends SubsystemBase {
+    private final CANSparkMax motor = new CANSparkMax(3, MotorType.kBrushless);
+    private final DutyCycleEncoder absEncoder = new DutyCycleEncoder(0);
+
+    private static final double ENCODER_OFFSET_RAD = 1.34;
+    private static final double MIN_ANGLE_RAD = Math.toRadians(-10);
+    private static final double MAX_ANGLE_RAD = Math.toRadians(115);
+
+    private final ArmFeedforward ff = new ArmFeedforward(0.1, 0.5, 1.8, 0.04);
+
+    private final ProfiledPIDController controller = new ProfiledPIDController(
+        2.0, 0, 0,
+        new TrapezoidProfile.Constraints(Math.PI, 2 * Math.PI)
+    );
+
+    public ArmSubsystem() {
+        controller.setTolerance(Math.toRadians(2));
+        // Seed the profiler at the current physical angle so the arm doesn't jerk on enable
+        controller.reset(getAngleRad());
+    }
+
+    public double getAngleRad() {
+        double raw = absEncoder.getAbsolutePosition() * 2 * Math.PI;
+        return raw - ENCODER_OFFSET_RAD;
+    }
+
+    public void setGoal(double angleRad) {
+        double clamped = MathUtil.clamp(angleRad, MIN_ANGLE_RAD, MAX_ANGLE_RAD);
+        controller.setGoal(new TrapezoidProfile.State(clamped, 0.0));
+    }
+
+    public boolean atGoal() {
+        return controller.atGoal();
+    }
+
+    @Override
+    public void periodic() {
+        double measurement = getAngleRad();
+        double pidVolts = controller.calculate(measurement);
+        TrapezoidProfile.State sp = controller.getSetpoint();
+        double ffVolts = ff.calculate(sp.position, sp.velocity);
+        double total = MathUtil.clamp(pidVolts + ffVolts, -10.0, 10.0);
+
+        // Enforce soft limits at the output stage as a safety backstop
+        if (measurement <= MIN_ANGLE_RAD && total < 0) total = 0;
+        if (measurement >= MAX_ANGLE_RAD && total > 0) total = 0;
+
+        motor.setVoltage(total);
+    }
+}
+```
+
+<Note>
+Calling `controller.reset(getAngleRad())` in the constructor initializes the profiler's current state to the actual arm position. Without this, the profiler assumes the arm starts at angle 0 and will try to move it there the first time you call `calculate()`.
+</Note>
+
+## Key takeaways
+
+- Gravity feedforward for an arm is `kG * cos(angle)` — not constant — because the torque gravity applies changes with arm orientation.
+- At 0° (horizontal), gravity feedforward is maximum (`kG * 1.0`). At 90° (vertical up), it is zero (`kG * 0.0`).
+- Absolute encoders are required for arms — relative encoders lose position on power cycle.
+- Apply an offset to map the absolute encoder reading to your physical reference frame (0 rad = horizontal).
+- Soft limits in code (angle checks before voltage output) and on the motor controller protect the mechanism.
+- Initialize `ProfiledPIDController` with `reset(currentAngle)` on enable to avoid startup jerk.
+
+## Common confusions
+
+**"My arm holds position at 0° but drifts at 45°."** The feedforward is wrong for 45°. Confirm you are passing the actual angle (in radians) to `ff.calculate()`, not a constant. Also check your encoder offset.
+
+**"The arm lurches when I enable the robot."** The profiler's internal state is at 0 when the robot enables, but the arm is physically at some other angle. Call `controller.reset(getAngleRad())` in `robotInit()` or on enable.
+
+**"I have kG = 0 but the arm still falls."** kG must be tuned to hold the arm at horizontal with no PID running. A common first step: disable PID, set kG manually until the arm barely holds at 0°. That's your baseline kG.
+
+**"Should I use degrees or radians?"** Radians — all of WPILib's trigonometric functions and feedforward classes assume radians. Convert operator inputs (like a joystick scaled to 0°–120°) to radians once at the entry point.
+
+## Challenge
+
+<Try>
+Compute the gravity feedforward voltage (kG * cos(angle)) for an arm at three angles: 0°, 45°, and 90°. Then verify that at each angle, the total feedforward voltage (including kS and kV at zero velocity) makes physical sense — it should be highest at horizontal, zero at vertical.
+
+kS = 0.08 V, kG = 0.52 V, kV = 1.75 V*s/rad, velocity = 0 rad/s (arm is holding still)
+
+Formula: ff = kS * 0 + kG * cos(angle) + kV * 0
+(kS term is 0 because sign(0) = 0 by WPILib convention, kV term is 0 because velocity = 0)
+</Try>
+
+<CodeEditor
+  client:load
+  starterCode={`public class Main {
+    public static void main(String[] args) {
+        double kS  = 0.08;  // V
+        double kG  = 0.52;  // V
+        double kV  = 1.75;  // V*s/rad
+        double vel = 0.0;   // rad/s — holding still
+
+        // Angles to evaluate
+        double[] degreeAngles = {0.0, 45.0, 90.0};
+
+        for (double deg : degreeAngles) {
+            double rad = Math.toRadians(deg);
+
+            // kS term: sign(velocity) = 0 when velocity is 0
+            double kSterm = (vel != 0) ? kS * Math.signum(vel) : 0.0;
+            // kG term: gravity compensation
+            double kGterm = kG * Math.cos(rad);
+            // kV term: zero because velocity is 0
+            double kVterm = kV * vel;
+
+            double ff = kSterm + kGterm + kVterm;
+            ff = Math.round(ff * 1000.0) / 1000.0;
+
+            System.out.println("angle=" + (int)deg + "deg ff=" + ff + "V");
+        }
+    }
+}`}
+  testCases={[
+    { label: "Gravity FF at 0, 45, 90 degrees with zero velocity", expected: "angle=0deg ff=0.52V\nangle=45deg ff=0.368V\nangle=90deg ff=0.0V" }
+  ]}
+  hint="cos(0°) = 1.0, cos(45°) = 0.7071, cos(90°) = 0.0. Multiply each by kG = 0.52. At velocity = 0, the kS and kV terms are both zero."
+/>
+
+<Quiz
+  client:load
+  question="An arm is at 60° above horizontal (1.047 rad). Its gravity feedforward constant kG is 0.6 V. What is the gravity feedforward voltage at this angle? (cos(60°) = 0.5)"
+  options={[
+    "0.6 V",
+    "0.3 V",
+    "0.52 V",
+    "1.2 V"
+  ]}
+  correct={1}
+  explanation="Gravity FF = kG * cos(angle) = 0.6 * cos(60°) = 0.6 * 0.5 = 0.3 V. At 60° the arm is tilted so gravity has half the leverage it would at horizontal — hence only half the feedforward voltage is needed."
+/>
+
+## What's next
+
+The next lesson covers elevator position control — where gravity feedforward is constant (no cos term) but precise zeroing on a limit switch and careful gear-ratio unit conversions are critical to getting the height right.

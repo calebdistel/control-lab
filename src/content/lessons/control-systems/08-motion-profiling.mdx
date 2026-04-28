@@ -1,0 +1,390 @@
+---
+track: control-systems
+lesson: 8
+title: "Motion Profiling"
+prereqs: [control-systems-07]
+objectives:
+  - Explain why commanding a step-change in setpoint stresses hardware and causes poor control
+  - Describe the three phases of a trapezoidal motion profile (accelerate, cruise, decelerate)
+  - Compute the duration and distance of each phase given max velocity and max acceleration constraints
+  - Use WPILib's TrapezoidProfile class to generate and follow a profile in code
+---
+
+import Key from '../../../components/Key.astro';
+import Try from '../../../components/Try.astro';
+import Note from '../../../components/Note.astro';
+import Warn from '../../../components/Warn.astro';
+import CodeTrace from '../../../components/demos/CodeTrace.jsx';
+import Quiz from '../../../components/demos/Quiz.jsx';
+import CodeEditor from '../../../components/demos/CodeEditor.jsx';
+
+## Hook
+
+Your arm PID is well-tuned. kP handles positioning, kG handles gravity, and the arm sits reliably at any angle you command. Then you add autonomous code that moves the arm from 0 degrees to 90 degrees at match start.
+
+You deploy it. The arm snaps up as fast as the motors can move it, slams into the target position, the gearbox makes a crunching sound, and the mechanism rattles for a second before settling. On the third autonomous run, a set screw strips out of the pinion gear.
+
+What happened? You commanded a step change from 0 to 90 degrees. The PID controller saw a 90-degree error and immediately commanded maximum output. The arm accelerated at full motor power — far beyond what the mechanism can safely handle.
+
+Motion profiling says: instead of telling the controller "be at 90 degrees now," you tell it "get to 90 degrees, but don't exceed these velocity and acceleration limits." The controller follows a smooth trajectory rather than chasing a step input.
+
+## Core concept
+
+<Key>
+A trapezoidal motion profile plans a smooth trajectory from start to goal that respects a maximum velocity and maximum acceleration. Instead of a single step-change setpoint, the profile generates a continuously updating position and velocity target each loop cycle. The mechanism accelerates smoothly to the cruise velocity, cruises, then decelerates to a stop at the goal — forming a velocity vs. time graph shaped like a trapezoid.
+</Key>
+
+### Why step-change setpoints are problematic
+
+When you command a step-change (instantaneous setpoint jump), several bad things happen simultaneously:
+
+**1. Maximum current draw**
+
+A large PID error → large output → maximum motor current. FRC motors can draw 100+ amps briefly. This can trip breakers, stress motor windings, and cause battery voltage to sag, which affects every other mechanism on the robot.
+
+**2. Mechanical shock loading**
+
+The mechanism accelerates from rest at maximum motor torque. For an arm with a 5:1 gearbox, this means the arm pivots attach points experience the full instantaneous torque of the motor multiplied by 5. Hardware not designed for this repeated shock loading will fail — stripped set screws, bent shafts, cracked brackets.
+
+**3. Poor control quality**
+
+Even with a good PID controller, a step-change into a slow mechanism means the controller will oscillate or overshoot. The derivative term tries to dampen this but there's a limit to what it can do against maximum motor torque.
+
+**4. Impossible following**
+
+If your setpoint jumps 90 degrees in 20 ms (one loop cycle), the feedforward term computes the required velocity as 90 degrees / 0.02 seconds = 4500 degrees/second. No FRC arm can move that fast — the feedforward is asking for physically impossible output.
+
+### The trapezoidal profile
+
+A trapezoidal profile plans motion in three phases:
+
+```
+Velocity
+^
+|        ____________
+|       /            \
+|      /              \
+|     /                \
+|    /                  \
+|___/____________________\___> time
+   t0   t1              t2  t3
+```
+
+| Phase | Duration | What happens |
+|---|---|---|
+| Accelerate (t0→t1) | `v_max / a_max` | Velocity increases from 0 to v_max at constant acceleration a_max |
+| Cruise (t1→t2) | Remaining time at constant speed | Velocity holds at v_max |
+| Decelerate (t2→t3) | `v_max / a_max` | Velocity decreases from v_max to 0 at constant deceleration a_max |
+
+The position (integral of velocity) forms a smooth S-curve.
+
+### Computing phase durations and distances
+
+Given:
+- `d` = total distance to travel
+- `v_max` = maximum velocity constraint
+- `a_max` = maximum acceleration constraint
+
+**Accelerate phase:**
+```
+t_accel = v_max / a_max
+d_accel = 0.5 * v_max * t_accel = 0.5 * v_max^2 / a_max
+```
+
+**Decelerate phase:** (symmetric with accelerate)
+```
+t_decel = v_max / a_max   (same as t_accel)
+d_decel = 0.5 * v_max^2 / a_max   (same as d_accel)
+```
+
+**Check: can we reach v_max?**
+
+If `d_accel + d_decel > d`, then the mechanism doesn't have enough distance to reach v_max. In that case, it's a triangular profile (no cruise phase):
+
+```
+v_peak = sqrt(a_max * d)   (peak velocity for triangular profile)
+t_accel = v_peak / a_max
+t_decel = v_peak / a_max
+total_time = t_accel + t_decel
+```
+
+**If we can reach v_max:**
+```
+d_cruise = d - d_accel - d_decel
+t_cruise = d_cruise / v_max
+total_time = t_accel + t_cruise + t_decel
+```
+
+### WPILib TrapezoidProfile
+
+WPILib provides TrapezoidProfile which handles all of this math. You give it constraints and a goal; it gives you the right state (position and velocity) at each loop cycle.
+
+```java
+import edu.wpi.first.math.trajectory.TrapezoidProfile;
+
+// Define constraints: max velocity and max acceleration (same units as your setpoint)
+TrapezoidProfile.Constraints constraints = new TrapezoidProfile.Constraints(
+    90.0,   // degrees per second max velocity
+    180.0   // degrees per second squared max acceleration
+);
+
+// In your subsystem:
+private TrapezoidProfile.State goal = new TrapezoidProfile.State();
+private TrapezoidProfile.State currentState = new TrapezoidProfile.State(0.0, 0.0);
+
+public void setTargetDegrees(double degrees) {
+    goal = new TrapezoidProfile.State(degrees, 0.0); // goal position, goal velocity = 0
+}
+
+@Override
+public void periodic() {
+    // Advance the profile by one loop period (0.02 s)
+    TrapezoidProfile profile = new TrapezoidProfile(constraints);
+    currentState = profile.calculate(0.02, currentState, goal);
+
+    // Use the profile's position as setpoint for PID
+    // Use the profile's velocity for feedforward
+    double positionSetpoint = currentState.position;
+    double velocitySetpoint = currentState.velocity;
+
+    // Compute FF + PID
+    double ffVolts = armFF.calculate(
+        Units.degreesToRadians(positionSetpoint),
+        Units.degreesToRadians(velocitySetpoint)
+    );
+    double pidVolts = pid.calculate(
+        Units.degreesToRadians(encoder.getPosition()),
+        Units.degreesToRadians(positionSetpoint)
+    ) * 12.0;
+
+    motor.setVoltage(ffVolts + pidVolts);
+}
+```
+
+The key insight: instead of passing a fixed goal angle to the PID, you pass `currentState.position` — a gradually-moving target that advances smoothly each loop. The PID always sees a small error (because the setpoint just moved a little), never a large step.
+
+### ProfiledPIDController: a convenient wrapper
+
+WPILib also provides ProfiledPIDController, which combines the profile and PID into one class:
+
+```java
+import edu.wpi.first.math.controller.ProfiledPIDController;
+
+ProfiledPIDController controller = new ProfiledPIDController(
+    kP, kI, kD,
+    new TrapezoidProfile.Constraints(maxVelocity, maxAcceleration)
+);
+
+// In periodic():
+double output = controller.calculate(measurement, goalPosition);
+// controller.getSetpoint() gives the current profile state (position + velocity)
+// Use .getSetpoint().velocity for feedforward
+double ffVolts = armFF.calculate(
+    Units.degreesToRadians(controller.getSetpoint().position),
+    Units.degreesToRadians(controller.getSetpoint().velocity)
+);
+motor.setVoltage(ffVolts + output * 12.0);
+```
+
+<Note>
+ProfiledPIDController.calculate() advances the internal profile by one dt each time it's called. Make sure it's called exactly once per loop cycle at a consistent rate. If your loop period varies (e.g., you call it more often in some code paths), the profile will advance at the wrong rate and motion will be too fast or too slow.
+</Note>
+
+### Choosing constraints
+
+The constraints (max velocity and max acceleration) should be set below the mechanism's physical limits:
+
+- **Max velocity**: typically 60-80% of the mechanism's unloaded maximum speed. This leaves headroom for the PID to track the profile.
+- **Max acceleration**: set conservatively — fast acceleration causes high motor current and mechanical shock. Start at 50% of what the motor could theoretically achieve and increase only if needed.
+
+Too-tight constraints (very slow velocity/acceleration) make autonomous slow and predictable but safe. Too-loose constraints approach the step-change problem you were trying to avoid.
+
+A good starting point: if your arm can physically move 180 degrees/second maximum, set the profile constraint to 120 degrees/second. For acceleration, set it such that the arm takes at least 0.3-0.5 seconds to reach full speed.
+
+<Warn>
+If your profile constraints are achievable but your actual mechanism can't follow them (e.g., the mechanism is physically slower than v_max due to friction or load), the PID will accumulate large errors while trying to chase a setpoint the mechanism can't keep up with. This causes integrator windup and overshoot when the mechanism finally catches up. Set constraints conservatively and verify with data logging that the actual velocity tracks the profiled velocity.
+</Warn>
+
+### Trapezoidal vs. S-curve profiles
+
+The trapezoidal profile has constant acceleration — it's a sharp corner in the jerk (rate of change of acceleration). This is fine for most FRC mechanisms. For very smooth motion (sensitive mechanisms or when jerk is a concern), an S-curve profile applies smooth acceleration transitions as well.
+
+WPILib only provides TrapezoidProfile, not an S-curve profile. For FRC purposes, trapezoidal is almost always sufficient.
+
+### Full arm control with motion profiling and FF+PID
+
+```java
+public class ArmSubsystem extends SubsystemBase {
+    private final CANSparkMax motor = new CANSparkMax(5, MotorType.kBrushless);
+    private final AbsoluteEncoder encoder = motor.getAbsoluteEncoder(Type.kDutyCycle);
+
+    // Feedforward (characterized with SysId)
+    private final ArmFeedforward ff = new ArmFeedforward(
+        0.15,   // kS volts
+        0.40,   // kG volts (at horizontal)
+        2.50,   // kV V*s/rad
+        0.05    // kA V*s²/rad
+    );
+
+    // Profiled PID: handles both the motion profile and position correction
+    private final ProfiledPIDController controller = new ProfiledPIDController(
+        8.0, 0.0, 0.3,
+        new TrapezoidProfile.Constraints(
+            Math.PI,        // max velocity: π rad/s (180 degrees/second)
+            2.0 * Math.PI   // max accel: 2π rad/s² (360 degrees/second squared)
+        )
+    );
+
+    public ArmSubsystem() {
+        controller.setTolerance(
+            Units.degreesToRadians(2.0),  // position tolerance: 2 degrees
+            Units.degreesToRadians(5.0)   // velocity tolerance: 5 degrees/s
+        );
+    }
+
+    public void setGoalDegrees(double degrees) {
+        controller.setGoal(Units.degreesToRadians(degrees));
+    }
+
+    public boolean atGoal() {
+        return controller.atGoal();
+    }
+
+    @Override
+    public void periodic() {
+        double posRad = Units.degreesToRadians(encoder.getPosition() * 360.0);
+
+        // PID advances the internal profile and computes correction
+        double pidOutput = controller.calculate(posRad);
+
+        // Feedforward from the profile's current state
+        TrapezoidProfile.State setpoint = controller.getSetpoint();
+        double ffVolts = ff.calculate(setpoint.position, setpoint.velocity);
+
+        motor.setVoltage(ffVolts + pidOutput);
+
+        // Logging
+        SmartDashboard.putNumber("Arm/GoalDeg", Units.radiansToDegrees(controller.getGoal().position));
+        SmartDashboard.putNumber("Arm/ProfileDeg", Units.radiansToDegrees(setpoint.position));
+        SmartDashboard.putNumber("Arm/ActualDeg", Units.radiansToDegrees(posRad));
+    }
+}
+```
+
+## Key takeaways
+
+- Step-change setpoints cause maximum current draw, mechanical shock, and control quality problems. Motion profiling eliminates these by generating a smooth trajectory.
+- A trapezoidal profile has three phases: accelerate at a_max to v_max, cruise at v_max, decelerate at a_max to zero. The velocity-vs-time graph is a trapezoid (or triangle if the distance is too short to reach v_max).
+- Key formulas: `t_accel = v_max / a_max`, `d_accel = 0.5 * v_max^2 / a_max`. If `2 * d_accel > d`, use triangular profile with `v_peak = sqrt(a_max * d)`.
+- WPILib: use `TrapezoidProfile` for raw profile math, or `ProfiledPIDController` to combine profiling and PID in one class.
+- Feed the profile's current velocity state into feedforward for accurate FF output during motion.
+- Set constraints conservatively: v_max at 60-80% of physical maximum, acceleration limited enough to keep current draw safe.
+
+## Common confusions
+
+**"My arm moves to the target position but then slowly creeps to a slightly different position."**
+
+This is the profile finishing (currentState.position reaches goal) while the actual arm is slightly off due to PID tracking error. At the end of the profile, the ProfiledPIDController transitions to static position holding. If there's residual error, the I term (if nonzero) will slowly correct it. Ensure kP is large enough to hold position; add a small kI if the creeping is persistent.
+
+**"My arm moves much slower than the profile constraints I set."**
+
+The physical mechanism can't follow the profile. This typically means the profile velocity is faster than the mechanism can achieve under load, or the PID gains are too small to track the profile. Log both profile position (setpoint) and actual position; if they diverge during motion, the mechanism is falling behind the profile.
+
+**"I'm calling TrapezoidProfile.calculate() but the arm doesn't follow a smooth curve — it jumps."**
+
+Make sure you're updating currentState with the result of each calculate() call and passing that updated state into the next call. If you pass the same initial state every time, the profile restarts from the beginning each loop. The state must be carried forward between loop cycles.
+
+**"What's the difference between ProfiledPIDController.setGoal() and setSetpoint()?"**
+
+`setGoal()` updates the final destination — where you want to end up. `setSetpoint()` in a regular PIDController updates where you want to be right now. In ProfiledPIDController, the "setpoint" is the current point on the profile (advancing each loop), while the "goal" is the final target. Always use `setGoal()` with ProfiledPIDController.
+
+**"Do I need motion profiling for a flywheel?"**
+
+Usually no. Flywheels are velocity-controlled (not position-controlled) and the goal is to reach a target velocity quickly. Sudden velocity setpoint changes are acceptable for flywheels — they don't have a position they can "slam into." Motion profiling is most important for position-controlled mechanisms: arms, elevators, turrets, and telescoping stages where a hard stop physically limits travel.
+
+## Challenge
+
+<Try>
+Given a mechanism with these parameters:
+- Distance to travel: 72 degrees
+- Maximum velocity: 120 degrees/second
+- Maximum acceleration: 200 degrees/second squared
+
+Compute:
+1. The distance covered during the accelerate phase
+2. Whether the mechanism reaches maximum velocity (trapezoidal) or must use a triangular profile
+3. The total time to complete the motion
+4. The distance covered during the cruise phase (if trapezoidal)
+</Try>
+
+<CodeEditor
+  client:load
+  starterCode={`public class TrapezoidCalculator {
+    public static void main(String[] args) {
+        double totalDistance = 72.0;  // degrees
+        double vMax = 120.0;          // degrees/second
+        double aMax = 200.0;          // degrees/second squared
+
+        // Step 1: compute acceleration phase distance
+        // d_accel = 0.5 * vMax^2 / aMax
+        double dAccel = 0.0; // TODO
+
+        // Step 2: check if profile is trapezoidal or triangular
+        // Trapezoidal if 2 * dAccel <= totalDistance
+        boolean isTrapezoidal = false; // TODO
+
+        System.out.println("=== Trapezoidal Profile Calculator ===");
+        System.out.printf("Total distance: %.1f deg%n", totalDistance);
+        System.out.printf("d_accel (one side): %.2f deg%n", dAccel);
+        System.out.printf("Profile shape: %s%n", isTrapezoidal ? "trapezoidal" : "triangular");
+
+        if (isTrapezoidal) {
+            // Trapezoidal: compute cruise phase and total time
+            double dCruise = 0.0; // TODO: totalDistance - 2 * dAccel
+            double tAccel = 0.0;  // TODO: vMax / aMax
+            double tCruise = 0.0; // TODO: dCruise / vMax
+            double tDecel = 0.0;  // same as tAccel
+            double tTotal = 0.0;  // TODO: sum
+
+            System.out.printf("d_cruise: %.2f deg%n", dCruise);
+            System.out.printf("t_accel: %.3f s%n", tAccel);
+            System.out.printf("t_cruise: %.3f s%n", tCruise);
+            System.out.printf("t_decel: %.3f s%n", tDecel);
+            System.out.printf("t_total: %.3f s%n", tTotal);
+        } else {
+            // Triangular: peak velocity is less than vMax
+            double vPeak = 0.0;  // TODO: Math.sqrt(aMax * totalDistance)
+            double tAccel = 0.0; // TODO: vPeak / aMax
+            double tTotal = 0.0; // TODO: 2 * tAccel
+
+            System.out.printf("v_peak: %.2f deg/s%n", vPeak);
+            System.out.printf("t_accel: %.3f s%n", tAccel);
+            System.out.printf("t_total: %.3f s%n", tTotal);
+        }
+    }
+}`}
+  testCases={[
+    { label: "d_accel is 36.00 deg", expected: "d_accel (one side): 36.00 deg" },
+    { label: "Profile is trapezoidal", expected: "Profile shape: trapezoidal" },
+    { label: "d_cruise is 0.00 deg", expected: "d_cruise: 0.00 deg" },
+    { label: "Total time is 1.200 s", expected: "t_total: 1.200 s" }
+  ]}
+  hint="d_accel = 0.5 * 120^2 / 200 = 0.5 * 14400/200 = 36.0 deg. 2*d_accel = 72 = totalDistance exactly, so the profile just barely reaches vMax with zero cruise distance. t_accel = 120/200 = 0.6s. t_total = 0.6 + 0 + 0.6 = 1.2s."
+/>
+
+<Quiz
+  client:load
+  question="You are using a ProfiledPIDController on an elevator. The elevator's maximum safe velocity is 2.0 m/s and maximum safe acceleration is 3.0 m/s². You set the constraints to exactly these values. During a match, you notice the elevator consistently lags behind the profile position by 5-10 cm throughout the motion. What is the most likely cause?"
+  options={[
+    "The profile constraints are too conservative — increase them to allow the elevator to move faster",
+    "The elevator cannot physically follow the profile at the specified constraints — reduce the constraints and/or increase PID gains",
+    "The PID's I term needs to be increased to eliminate tracking lag",
+    "The profile is calculating in the wrong units"
+  ]}
+  correct={1}
+  explanation="When the actual mechanism consistently lags behind the profile setpoint, the mechanism cannot keep up with the commanded trajectory. Setting constraints at the physical maximum leaves no margin — motor current limits, friction, and load mean the mechanism rarely achieves exactly its maximum speed. Reduce constraints to 70-80% of physical maximum, and ensure PID gains are large enough to track the profile. Adding kI for tracking lag is a band-aid that can cause windup; the real fix is achievable constraints."
+/>
+
+## What's next
+
+You've now built a complete foundation in FRC control theory: from the feedback loop concept, through bang-bang and PID, through feedforward, and into motion profiling. The natural next topics to explore are state-space control (an alternative to PID that handles multi-variable systems), autonomous path following with Ramsete or Pure Pursuit, and vision-assisted targeting with PhotonVision. Each of these builds directly on the PID + feedforward + profiling concepts you've learned in this track.

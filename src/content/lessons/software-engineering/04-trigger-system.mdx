@@ -1,0 +1,384 @@
+---
+track: software-engineering
+lesson: 4
+title: Advanced Trigger System
+prereqs: [software-engineering-03]
+objectives:
+  - Explain how a Trigger acts as a reactive layer between sensor conditions and command scheduling
+  - Apply onTrue, onFalse, whileTrue, and toggleOnTrue correctly for different driver interaction patterns
+  - Compose triggers using and(), or(), and negate() to express compound conditions
+  - Create a custom trigger from a BooleanSupplier and apply debouncing to eliminate sensor noise
+---
+
+import Key from '../../../components/Key.astro';
+import Try from '../../../components/Try.astro';
+import Note from '../../../components/Note.astro';
+import Warn from '../../../components/Warn.astro';
+import Quiz from '../../../components/demos/Quiz.jsx';
+import CodeEditor from '../../../components/demos/CodeEditor.jsx';
+
+## Hook
+
+Your intake should run whenever the driver holds A — unless the robot is in auto-score mode, in which case the intake should stop. The hood should toggle between high and low positions each time the driver presses Y. The spinner should kick on whenever the beam break says a piece is present *and* the driver isn't pressing the cancel button.
+
+You could implement all of this with `if` chains in `teleopPeriodic()`. You'd poll every button and sensor manually, track state for the toggle, handle edge-case interactions, and end up with code nobody wants to touch.
+
+Or you could use the Trigger system — and express the entire thing in six readable lines.
+
+## Core concept
+
+<Key>
+A Trigger is a reactive wrapper around a BooleanSupplier. It watches a condition every scheduler loop and fires commands in response to state changes — rising edge (onTrue), falling edge (onFalse), while held (whileTrue), or toggle (toggleOnTrue). Triggers compose with and(), or(), and negate() to build compound conditions without any polling code.
+</Key>
+
+## What is a Trigger?
+
+A `Trigger` wraps any `BooleanSupplier` — a function that returns true or false. The scheduler polls it every loop and detects state changes (false→true and true→false transitions).
+
+```java
+// A trigger that's true when the left trigger axis is past 50%
+Trigger leftTrigger = new Trigger(() -> driver.getLeftTriggerAxis() > 0.5);
+
+// A trigger from a joystick button (same pattern, different source)
+Trigger aButton = new JoystickButton(driver, XboxController.Button.kA.value);
+// JoystickButton extends Trigger — it's not a special type, just a convenience wrapper
+```
+
+`JoystickButton`, `POVButton`, and the new `CommandXboxController` methods all return `Trigger` objects. The underlying mechanism is identical.
+
+## The four binding methods
+
+### onTrue — rising edge
+
+Schedules the command once when the condition transitions from false → true. The command runs to completion; releasing the button doesn't cancel it.
+
+```java
+aButton.onTrue(new ArmToPositionCommand(arm, 120.0));
+// Press A → arm starts moving to 120°
+// Release A → arm keeps moving until it reaches 120°
+```
+
+**Use for:** Point-to-point moves, one-shot actions, "press to trigger" behaviors.
+
+### onFalse — falling edge
+
+Schedules the command once when the condition transitions from true → false.
+
+```java
+aButton.onFalse(new ArmToPositionCommand(arm, 0.0));
+// Hold A → nothing happens
+// Release A → arm returns to stow position
+```
+
+**Use for:** "On release" actions — stowing, returning to home, confirming an action is done.
+
+### whileTrue — held
+
+Schedules the command when the condition becomes true; cancels it (via interrupt) when the condition becomes false. The command is re-scheduled from scratch if the condition cycles on/off.
+
+```java
+aButton.whileTrue(new IntakeCommand(intake));
+// Hold A → intake runs
+// Release A → intake command is interrupted, end(true) is called
+```
+
+**Use for:** Held-button mechanisms — intake motors, manual overrides, joystick-driven movement.
+
+### toggleOnTrue — toggle
+
+Alternates between scheduling and cancelling the command on each rising edge.
+
+```java
+yButton.toggleOnTrue(new SpinUpShooterCommand(shooter));
+// Press Y → shooter spins up
+// Press Y again → shooter is cancelled (stops)
+// Press Y again → shooter spins up again
+```
+
+**Use for:** On/off toggles where the driver wants to set it and forget it.
+
+<Note>
+For WPILib 2023+, `CommandXboxController` provides named methods: `controller.a().onTrue(...)`, `controller.leftBumper().whileTrue(...)`. These are preferred over `new JoystickButton(controller, ...)` because they're more readable and type-safe.
+</Note>
+
+## Composing triggers
+
+Triggers compose with logical operators. Each method returns a new `Trigger`.
+
+### and() — both conditions true
+
+```java
+// Intake runs only when A is held AND the robot is not in auto mode
+Trigger notInAuto = new Trigger(() -> !robot.isAutonomous());
+aButton.and(notInAuto).whileTrue(new IntakeCommand(intake));
+```
+
+### or() — either condition true
+
+```java
+// Emergency stop fires from either the button OR a current spike
+Trigger overCurrentFault = new Trigger(() -> arm.getCurrentAmps() > 40.0);
+Trigger startButton = controller.start();
+startButton.or(overCurrentFault).onTrue(new EmergencyStopCommand(arm));
+```
+
+### negate() — invert the condition
+
+```java
+// Default drive runs only while NO other command is active
+Trigger noCommandActive = new Trigger(arm::isIdle).and(new Trigger(intake::isIdle));
+noCommandActive.whileTrue(new TeleopDriveCommand(drive, controller));
+// Note: usually this is better handled with setDefaultCommand()
+```
+
+### Chains are readable
+
+```java
+// Complex condition: right trigger pressed AND arm is up AND not stalled
+Trigger safeToShoot = controller.rightTrigger(0.5)
+    .and(new Trigger(arm::isAtScoringPosition))
+    .and(new Trigger(() -> !shooter.isStalled()));
+
+safeToShoot.onTrue(new ShootCommand(shooter));
+```
+
+## Custom triggers from BooleanSupplier
+
+Any condition that returns a boolean can become a trigger:
+
+```java
+// Trigger from a subsystem method
+Trigger pieceDetected = new Trigger(intake::hasPiece);
+
+// Trigger from a math expression
+Trigger robotFast = new Trigger(() -> drive.getSpeedMetersPerSec() > 3.0);
+
+// Trigger from a NetworkTable entry (for dashboard-driven modes)
+Trigger highGoalMode = new Trigger(
+    () -> SmartDashboard.getBoolean("HighGoalMode", false)
+);
+
+// Trigger from a time condition
+Trigger endgame = new Trigger(() -> DriverStation.getMatchTime() < 30.0);
+```
+
+## Debouncing
+
+Physical sensors bounce — a beam-break or limit switch might rapidly toggle true/false/true in a single millisecond when something crosses it. Without debouncing, you'd schedule a command dozens of times in one loop.
+
+`Trigger.debounce(seconds)` requires the condition to be stable for the given duration before the trigger fires:
+
+```java
+// Don't fire until the beam-break has been true for 50ms continuously
+Trigger stableDetect = new Trigger(intake::getRawBeamBreak)
+    .debounce(0.05);
+
+stableDetect.onTrue(new GrabPieceCommand(intake));
+```
+
+Debounce also works on the falling edge:
+
+```java
+// Don't fire "piece gone" until beam-break has been false for 100ms
+Trigger pieceLost = new Trigger(intake::getRawBeamBreak)
+    .negate()
+    .debounce(0.1);
+
+pieceLost.onTrue(new ResetIntakeCommand(intake));
+```
+
+<Warn>
+Debounce adds a delay. For driver buttons, 50 ms is imperceptible. For safety stops (over-current, limit switch hit), use shorter delays or none — you want those to fire immediately.
+</Warn>
+
+## Sensor-driven commands without polling
+
+The old pattern: poll sensors in `periodic()`, manually schedule commands.
+
+```java
+// BAD: manual polling in periodic() — fragile, verbose
+@Override
+public void teleopPeriodic() {
+    if (intake.hasPiece() && !wasHoldingPiece) {
+        new RumbleCommand(controller).schedule();
+        wasHoldingPiece = true;
+    } else if (!intake.hasPiece()) {
+        wasHoldingPiece = false;
+    }
+}
+```
+
+The Trigger pattern: declare the condition once, attach behavior.
+
+```java
+// GOOD: reactive, no state tracking needed
+new Trigger(intake::hasPiece)
+    .debounce(0.05)
+    .onTrue(new RumbleCommand(controller));
+```
+
+The scheduler handles edge detection and state tracking internally. You don't need `wasHoldingPiece` at all.
+
+## A complete binding setup
+
+Here's a realistic `configureBindings()` for an FRC intake/shooter robot:
+
+```java
+private void configureBindings() {
+    CommandXboxController driver = new CommandXboxController(0);
+    CommandXboxController operator = new CommandXboxController(1);
+
+    // Driver: hold right trigger to intake
+    driver.rightTrigger(0.5).whileTrue(new IntakeCommand(intake));
+
+    // Driver: A button to toggle shooter spin-up
+    driver.a().toggleOnTrue(new SpinUpShooterCommand(shooter));
+
+    // Driver: right bumper to shoot (only when shooter is at speed)
+    driver.rightBumper()
+        .and(new Trigger(shooter::atSetpoint))
+        .onTrue(new FeedCommand(feeder));
+
+    // Operator: left bumper to arm scoring position; release to stow
+    operator.leftBumper()
+        .onTrue(new ArmToPositionCommand(arm, 120.0))
+        .onFalse(new ArmToPositionCommand(arm, 0.0));
+
+    // Auto-rumble driver controller when piece is picked up
+    new Trigger(intake::hasPiece)
+        .debounce(0.05)
+        .onTrue(new RumbleCommand(driver.getHID(), 0.5).withTimeout(0.3));
+
+    // Emergency: start button cancels all arm + intake commands
+    driver.start().onTrue(
+        Commands.runOnce(() -> {
+            arm.setTargetAngle(arm.getAngleDegrees());  // hold in place
+            intake.stopIntake();
+        }, arm, intake)
+    );
+
+    // Sensor-driven: when piece is detected AND arm is at scoring height,
+    // auto-feed to shooter (operator mode only)
+    Trigger autoFeedEnabled = new Trigger(
+        () -> SmartDashboard.getBoolean("AutoFeed", false)
+    );
+    new Trigger(intake::hasPiece)
+        .and(new Trigger(arm::isAtScoringPosition))
+        .and(autoFeedEnabled)
+        .debounce(0.1)
+        .onTrue(new FeedCommand(feeder));
+}
+```
+
+## Key takeaways
+
+- A Trigger wraps any `BooleanSupplier` and fires commands in response to state changes — no manual polling needed.
+- `onTrue` = rising edge (runs to completion). `whileTrue` = held (cancelled on release). `onFalse` = falling edge. `toggleOnTrue` = alternates on each press.
+- `and()`, `or()`, `negate()` compose triggers into compound conditions — all return new `Trigger` objects.
+- `debounce(seconds)` prevents noise-driven false fires from physical sensors.
+- `CommandXboxController` (WPILib 2023+) is preferred — its methods return `Trigger` directly.
+
+## Common confusions
+
+**"My onTrue command fires every loop."** You're probably accidentally recreating the Trigger each loop (e.g., inside `periodic()`). Triggers must be created once in `configureBindings()`, not re-instantiated repeatedly.
+
+**"toggleOnTrue fires twice per press."** Physical buttons can bounce. Add `.debounce(0.05)` before `.toggleOnTrue()`.
+
+**"My and() composition isn't working."** Check that both conditions are actually true at the same time. Add temporary `Commands.print()` triggers on each side to confirm.
+
+**"whileTrue cancelled too early."** The trigger's BooleanSupplier returned false before you expected. Use `SmartDashboard.putBoolean("TriggerState", condition)` to watch it live.
+
+## Challenge
+
+<Try>
+Design all trigger bindings for an intake mechanism with these requirements:
+- Hold left trigger to run the intake motor.
+- When the intake detects a piece (beam-break sensor), automatically rumble the controller and stop the intake motor (even if the driver is still holding left trigger).
+- Press B to eject the piece.
+- If current draw exceeds 30 A, stop the intake immediately (safety interlock) — this should work even if the driver is holding left trigger.
+
+Think about: which trigger method is right for each binding? Where does debounce help? How do you express "A AND NOT B" for the safety override?
+</Try>
+
+<CodeEditor
+  client:load
+  starterCode={`// Simulate Trigger composition logic.
+// Each Trigger is a BooleanSupplier. Composed triggers combine them.
+// Implement the and(), or(), negate() logic, then test the combinations.
+
+public class TriggerDemo {
+
+    @FunctionalInterface
+    interface BoolSupplier {
+        boolean get();
+    }
+
+    static class Trigger {
+        private final BoolSupplier condition;
+
+        Trigger(BoolSupplier condition) {
+            this.condition = condition;
+        }
+
+        boolean get() {
+            return condition.get();
+        }
+
+        Trigger and(Trigger other) {
+            return new Trigger(() -> this.get() && other.get());
+        }
+
+        Trigger or(Trigger other) {
+            return new Trigger(() -> this.get() || other.get());
+        }
+
+        Trigger negate() {
+            return new Trigger(() -> !this.get());
+        }
+    }
+
+    public static void main(String[] args) {
+        // Simulate sensor states
+        boolean[] buttonA    = { false };
+        boolean[] hasPiece   = { false };
+        boolean[] overCurrent = { false };
+
+        Trigger aPressed    = new Trigger(() -> buttonA[0]);
+        Trigger pieceInIntake = new Trigger(() -> hasPiece[0]);
+        Trigger currentFault  = new Trigger(() -> overCurrent[0]);
+
+        // TODO: Create a trigger: intake should run when A is pressed
+        //       AND no piece present AND no current fault
+        Trigger intakeShouldRun = null; // replace null
+
+        // TODO: Create a trigger: stop intake when piece present OR current fault
+        Trigger stopIntake = null; // replace null
+
+        // Test case 1: A pressed, no piece, no fault → should run
+        buttonA[0] = true; hasPiece[0] = false; overCurrent[0] = false;
+        System.out.println("Test 1 - Should run: " + (intakeShouldRun != null && intakeShouldRun.get()));
+
+        // Test case 2: A pressed, piece present → should NOT run
+        hasPiece[0] = true;
+        System.out.println("Test 2 - Should run: " + (intakeShouldRun != null && intakeShouldRun.get()));
+
+        // Test case 3: piece present → stop trigger fires
+        System.out.println("Test 3 - Stop fires: " + (stopIntake != null && stopIntake.get()));
+
+        // Test case 4: current fault only → stop trigger fires
+        hasPiece[0] = false; overCurrent[0] = true;
+        System.out.println("Test 4 - Stop fires: " + (stopIntake != null && stopIntake.get()));
+    }
+}`}
+  testCases={[
+    { label: "A pressed, no piece, no fault: should run = true", expected: "Test 1 - Should run: true" },
+    { label: "A pressed, piece present: should run = false", expected: "Test 2 - Should run: false" },
+    { label: "Piece present: stop fires = true", expected: "Test 3 - Stop fires: true" },
+    { label: "Current fault: stop fires = true", expected: "Test 4 - Stop fires: true" },
+  ]}
+  hint="intakeShouldRun = aPressed.and(pieceInIntake.negate()).and(currentFault.negate()). stopIntake = pieceInIntake.or(currentFault). Replace the null assignments with these expressions."
+/>
+
+## What's next
+
+In **Software Engineering Lesson 05**, we'll tackle Testing Robot Code — how to write real unit tests for subsystem logic and command sequences using JUnit and WPILib's HALSim, without needing a physical robot.

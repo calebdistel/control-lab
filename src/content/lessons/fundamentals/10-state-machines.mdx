@@ -1,0 +1,220 @@
+---
+track: fundamentals
+lesson: 10
+title: State machines
+prereqs: [fundamentals-09]
+objectives:
+  - Explain what a finite state machine is and why robots need them
+  - Implement a simple state machine using a Java enum and switch statement
+  - Trace a state machine through a sequence of inputs and predict the current state
+---
+
+import Key from '../../../components/Key.astro';
+import Try from '../../../components/Try.astro';
+import Note from '../../../components/Note.astro';
+import Warn from '../../../components/Warn.astro';
+import CodeTrace from '../../../components/demos/CodeTrace.jsx';
+import Quiz from '../../../components/demos/Quiz.jsx';
+import StateDiagram from '../../../components/demos/StateDiagram.jsx';
+import CodeEditor from '../../../components/demos/CodeEditor.jsx';
+
+## Hook
+
+You want an arm that does three things: stow when not in use, deploy to score, and briefly hold a game piece mid-air. You try to manage it with boolean flags:
+
+```java
+boolean isDeployed = false;
+boolean isHolding = false;
+boolean isStowed = true;
+```
+
+By the time you add transitions — "if deployed AND sensor fires, go to holding" — you have a nest of `if/else` blocks that contradict each other. The arm randomly ends up "deployed AND stowed" at the same time.
+
+The problem: **you're using three separate booleans to represent one thing that can only ever be in one state at a time.**
+
+## Core concept
+
+<Key>
+A finite state machine (FSM) is a model where a system is always in exactly one **state**, and **events** trigger transitions between states. It makes impossible combinations impossible.
+</Key>
+
+An intake system might have these states:
+
+- **EMPTY** — no game piece present
+- **INTAKING** — motors running, waiting for piece
+- **HOLDING** — piece detected, motors stopped
+- **EJECTING** — launching piece toward target
+
+A piece can't be EMPTY and HOLDING simultaneously. An FSM enforces that by design.
+
+## State diagram
+
+<StateDiagram
+  client:load
+  states={["EMPTY", "INTAKING", "HOLDING", "EJECTING"]}
+  transitions={[
+    { from: "EMPTY",    to: "INTAKING", label: "intakeButton" },
+    { from: "INTAKING", to: "HOLDING",  label: "sensorTripped" },
+    { from: "INTAKING", to: "EMPTY",    label: "buttonReleased" },
+    { from: "HOLDING",  to: "EJECTING", label: "shootButton" },
+    { from: "EJECTING", to: "EMPTY",    label: "sensorCleared" },
+  ]}
+  initial="EMPTY"
+/>
+
+Every arrow is an event. Every node is a state. There's no combination that isn't on the diagram.
+
+## Java implementation
+
+Use a Java `enum` to define the states, then a `switch` in `periodic()` to act on the current state:
+
+```java
+enum IntakeState { EMPTY, INTAKING, HOLDING, EJECTING }
+
+IntakeState state = IntakeState.EMPTY;  // field — persists between calls
+
+void periodic() {
+    switch (state) {
+        case EMPTY:
+            motor.set(0);
+            if (intakeButton.get()) state = IntakeState.INTAKING;
+            break;
+        case INTAKING:
+            motor.set(0.8);
+            if (sensor.hasGamePiece()) state = IntakeState.HOLDING;
+            if (!intakeButton.get()) state = IntakeState.EMPTY;
+            break;
+        case HOLDING:
+            motor.set(0.1);  // small hold power
+            if (shootButton.get()) state = IntakeState.EJECTING;
+            break;
+        case EJECTING:
+            motor.set(-1.0);
+            if (!sensor.hasGamePiece()) state = IntakeState.EMPTY;
+            break;
+    }
+}
+```
+
+The robot can never be in two states at once — `state` is a single variable.
+
+## Trace a state machine
+
+Watch what happens across several loop cycles as a game piece is acquired then ejected:
+
+<CodeTrace
+  client:load
+  code={`switch (state) {
+    case EMPTY:
+        motor.set(0);
+        if (intakeButton.get()) state = INTAKING;
+        break;
+    case INTAKING:
+        motor.set(0.8);
+        if (sensor.hasGamePiece()) state = HOLDING;
+        break;
+    case HOLDING:
+        motor.set(0.1);
+        if (shootButton.get()) state = EJECTING;
+        break;
+    case EJECTING:
+        motor.set(-1.0);
+        if (!sensor.hasGamePiece()) state = EMPTY;
+        break;
+}`}
+  variables={{ call: 1, state: "EMPTY", motor: 0, intakeBtn: false, sensor: false, shootBtn: false }}
+  steps={[
+    { line: 2,  label: "State is EMPTY — enter that case", state: { call: 1, state: "EMPTY", motor: 0, intakeBtn: false, sensor: false, shootBtn: false } },
+    { line: 3,  label: "motor.set(0) — idle", state: { call: 1, state: "EMPTY", motor: 0, intakeBtn: false, sensor: false, shootBtn: false } },
+    { line: 4,  label: "intakeButton.get() → false — stay in EMPTY", state: { call: 1, state: "EMPTY", motor: 0, intakeBtn: false, sensor: false, shootBtn: false } },
+    { line: 4,  label: "Call #2 — driver presses intake button", state: { call: 2, state: "EMPTY", motor: 0, intakeBtn: true, sensor: false, shootBtn: false } },
+    { line: 4,  label: "intakeButton.get() → true → transition to INTAKING", state: { call: 2, state: "INTAKING", motor: 0, intakeBtn: true, sensor: false, shootBtn: false } },
+    { line: 6,  label: "Call #3 — state is INTAKING, enter that case", state: { call: 3, state: "INTAKING", motor: 0, intakeBtn: true, sensor: false, shootBtn: false } },
+    { line: 7,  label: "motor.set(0.8) — motors spin, waiting for piece", state: { call: 3, state: "INTAKING", motor: 0.8, intakeBtn: true, sensor: false, shootBtn: false } },
+    { line: 8,  label: "sensor.hasGamePiece() → false — keep intaking", state: { call: 3, state: "INTAKING", motor: 0.8, intakeBtn: true, sensor: false, shootBtn: false } },
+    { line: 8,  label: "Call #4 — game piece hits sensor", state: { call: 4, state: "INTAKING", motor: 0.8, intakeBtn: true, sensor: true, shootBtn: false } },
+    { line: 8,  label: "sensor.hasGamePiece() → true → transition to HOLDING", state: { call: 4, state: "HOLDING", motor: 0.8, intakeBtn: true, sensor: true, shootBtn: false } },
+    { line: 10, label: "Call #5 — state is HOLDING", state: { call: 5, state: "HOLDING", motor: 0.8, intakeBtn: true, sensor: true, shootBtn: false } },
+    { line: 11, label: "motor.set(0.1) — gentle hold power", state: { call: 5, state: "HOLDING", motor: 0.1, intakeBtn: true, sensor: true, shootBtn: false } },
+    { line: 12, label: "shootButton.get() → false — hold and wait", state: { call: 5, state: "HOLDING", motor: 0.1, intakeBtn: true, sensor: true, shootBtn: false } },
+    { line: 12, label: "Call #6 — driver presses shoot", state: { call: 6, state: "HOLDING", motor: 0.1, intakeBtn: true, sensor: true, shootBtn: true } },
+    { line: 12, label: "shootButton.get() → true → transition to EJECTING", state: { call: 6, state: "EJECTING", motor: 0.1, intakeBtn: true, sensor: true, shootBtn: true } },
+    { line: 14, label: "Call #7 — state is EJECTING", state: { call: 7, state: "EJECTING", motor: 0.1, intakeBtn: true, sensor: true, shootBtn: true } },
+    { line: 15, label: "motor.set(-1.0) — full reverse to launch", state: { call: 7, state: "EJECTING", motor: -1.0, intakeBtn: true, sensor: true, shootBtn: true } },
+    { line: 16, label: "sensor still has piece — keep ejecting", state: { call: 7, state: "EJECTING", motor: -1.0, intakeBtn: true, sensor: true, shootBtn: true } },
+    { line: 16, label: "Call #8 — sensor cleared, piece is gone", state: { call: 8, state: "EJECTING", motor: -1.0, intakeBtn: true, sensor: false, shootBtn: true } },
+    { line: 16, label: "!sensor → true → transition back to EMPTY", state: { call: 8, state: "EMPTY", motor: -1.0, intakeBtn: true, sensor: false, shootBtn: true } },
+  ]}
+/>
+
+## Try it yourself
+
+<Try>
+An elevator has states: `BOTTOM`, `MOVING_UP`, `TOP`, `MOVING_DOWN`. A `limitTop` sensor triggers when it reaches the top, `limitBottom` when it reaches the bottom. The driver presses `upButton` or `downButton`.
+
+Trace the state starting from `BOTTOM`. Events in order: upButton pressed → limitTop fires → downButton pressed → limitBottom fires.
+
+What is the final state?
+</Try>
+
+<Quiz
+  client:load
+  question="After: upButton pressed → limitTop fires → downButton pressed → limitBottom fires — what state is the elevator in?"
+  options={["BOTTOM", "TOP", "MOVING_UP", "MOVING_DOWN"]}
+  correct={0}
+  explanation="BOTTOM → MOVING_UP (upButton) → TOP (limitTop) → MOVING_DOWN (downButton) → BOTTOM (limitBottom). The final state is BOTTOM."
+/>
+
+## Key takeaways
+
+- A state machine ensures the system is in exactly one state at a time — impossible combinations become impossible.
+- Use a Java `enum` to list the states and a `switch` to act on the current state.
+- Transitions happen inside the `switch` cases, triggered by sensor readings or driver input.
+- State is a field — it must persist between calls to `periodic()`.
+
+## Common confusions
+
+**"Can't I just use booleans?"** You can, but two booleans allow four combinations even if only three are valid. An `enum` with three states allows exactly three — the compiler enforces it.
+
+**"What if two events happen at the same time?"** In `periodic()`, transitions happen in the order you check them. The first matching condition wins. Design your checks so the priority order makes sense.
+
+**"When is a state machine overkill?"** For simple two-state behavior (on/off), a boolean field is fine. Use an FSM when you have three or more distinct modes with well-defined transitions.
+
+## Challenge
+
+<Try>
+Implement the transitions for a simple 3-state machine: `IDLE`, `RUNNING`, `ERROR`.
+
+- `IDLE` + `"start"` → `RUNNING`
+- `RUNNING` + `"done"` → `IDLE`
+- `RUNNING` + `"fault"` → `ERROR`
+- `ERROR` + `"reset"` → `IDLE`
+- Any other combination returns the current state unchanged.
+</Try>
+
+<CodeEditor
+  client:load
+  starterCode={`public class Main {
+    static String transition(String state, String event) {
+        // Implement the state machine transitions above
+        return state; // replace this
+    }
+
+    public static void main(String[] args) {
+        String s = "IDLE";
+        s = transition(s, "start");  System.out.println(s); // RUNNING
+        s = transition(s, "done");   System.out.println(s); // IDLE
+        s = transition(s, "start");  System.out.println(s); // RUNNING
+        s = transition(s, "fault");  System.out.println(s); // ERROR
+        s = transition(s, "reset");  System.out.println(s); // IDLE
+    }
+}`}
+  testCases={[
+    { label: "Full transition sequence", expected: "RUNNING\nIDLE\nRUNNING\nERROR\nIDLE" },
+  ]}
+  hint="Use a series of if/else-if checks: if (state.equals('IDLE') && event.equals('start')) return 'RUNNING'; etc."
+/>
+
+## What's next
+
+In **Lesson 11**, we'll look at systematic debugging — how to isolate whether a bug is in your logic, a sensor reading, or hardware.

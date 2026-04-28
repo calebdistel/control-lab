@@ -1,0 +1,366 @@
+---
+track: software-engineering
+lesson: 3
+title: Command Composition
+prereqs: [software-engineering-01]
+objectives:
+  - Distinguish between SequentialCommandGroup, ParallelCommandGroup, ParallelRaceGroup, and ParallelDeadlineGroup and choose the correct one for a given scenario
+  - Use Commands.sequence() and Commands.parallel() factory methods to build compositions inline
+  - Combine WaitCommand and WaitUntilCommand to add timing and sensor-gated delays into auto routines
+  - Design a multi-step autonomous routine from simple command primitives
+---
+
+import Key from '../../../components/Key.astro';
+import Try from '../../../components/Try.astro';
+import Note from '../../../components/Note.astro';
+import Warn from '../../../components/Warn.astro';
+import Quiz from '../../../components/demos/Quiz.jsx';
+import CodeEditor from '../../../components/demos/CodeEditor.jsx';
+
+## Hook
+
+Autonomous mode. Fifteen seconds. Your routine needs to:
+
+1. Drive forward 1 meter.
+2. Wait for the arm to reach scoring position.
+3. Run the shooter for exactly 1.5 seconds.
+4. Retract the arm and drive backward simultaneously.
+5. Stop everything when the drive encoder hits 2 meters.
+
+In monolithic code this is a hundred-line state machine with flags for each step, edge cases for interruptions, and zero reuse — you rewrite it from scratch for every auto variant.
+
+With command composition, it's twelve lines of readable Java. Each step is a reusable command. The composition is declarative: you describe the shape of the routine, and the scheduler runs it.
+
+## Core concept
+
+<Key>
+Command composition builds complex behaviors from simple, reusable command primitives. Sequential groups run commands one after another. Parallel groups run commands simultaneously. Race and Deadline groups add completion policies. Composing small, tested pieces is faster and safer than writing monolithic auto routines.
+</Key>
+
+## The composition types
+
+### SequentialCommandGroup
+
+Runs commands one at a time, in order. The next command starts only after the previous one finishes.
+
+```java
+new SequentialCommandGroup(
+    new DriveForwardCommand(drive, 1.0),   // runs first
+    new ArmToScoringCommand(arm),           // runs second, after drive finishes
+    new ShootCommand(shooter)               // runs third
+);
+```
+
+**When to use:** Multi-step sequences where order matters and each step must complete before the next begins.
+
+### ParallelCommandGroup
+
+Runs all commands simultaneously. The group finishes when *all* commands finish.
+
+```java
+new ParallelCommandGroup(
+    new ArmRetractCommand(arm),    // runs at the same time
+    new DriveBackwardCommand(drive, 1.0)  // both must finish
+);
+```
+
+**When to use:** Independent mechanisms that can move at the same time without interfering.
+
+<Warn>
+Never put two commands that require the same subsystem in a ParallelCommandGroup. The scheduler will throw a runtime exception — requirement conflicts inside a group are illegal.
+</Warn>
+
+### ParallelRaceGroup
+
+Runs all commands simultaneously. The group finishes when *any one* command finishes — the rest are interrupted.
+
+```java
+new ParallelRaceGroup(
+    new ShootCommand(shooter),          // run shooter...
+    new WaitCommand(1.5)                // ...but stop after 1.5 seconds regardless
+);
+```
+
+**When to use:** When you want a command to run "for at most X seconds" or "until a condition fires."
+
+### ParallelDeadlineGroup
+
+Runs all commands simultaneously. The group finishes when *one specific "deadline" command* finishes — others are interrupted. The deadline is the first argument.
+
+```java
+new ParallelDeadlineGroup(
+    new DriveToZoneCommand(drive),       // deadline — everything stops when drive finishes
+    new IntakeSpinCommand(intake),       // runs alongside drive, cancelled when drive ends
+    new LEDFlashCommand(leds)            // also runs alongside, also cancelled
+);
+```
+
+**When to use:** One command defines "done" for the whole group; others are support/visual/feedback that should run during it.
+
+## Factory methods: Commands.sequence() and Commands.parallel()
+
+Since WPILib 2023, you can use static factory methods instead of `new SequentialCommandGroup(...)`. They're shorter and compose more naturally inline:
+
+```java
+import static edu.wpi.first.wpilibj2.command.Commands.*;
+
+Command auto = sequence(
+    runOnce(() -> drive.resetEncoders(), drive),
+    parallel(
+        new ArmToPositionCommand(arm, 45.0),
+        new WaitCommand(0.5)              // give drive time to stabilize
+    ),
+    run(() -> shooter.setRPM(4500), shooter).withTimeout(2.0),
+    parallel(
+        new ArmRetractCommand(arm),
+        new DriveBackwardCommand(drive, 1.5)
+    )
+);
+```
+
+`Commands.run()` wraps a lambda as a command. `Commands.runOnce()` wraps a lambda that runs exactly once. Both require you to pass the subsystems they use so the scheduler can enforce requirements.
+
+## WaitCommand and WaitUntilCommand
+
+**`WaitCommand(seconds)`** — does nothing for a fixed duration, then finishes. Use it to add pauses between steps.
+
+```java
+sequence(
+    new ShootCommand(shooter),
+    new WaitCommand(0.3),           // wait 300ms for game piece to clear
+    new IntakeCommand(intake)
+);
+```
+
+**`WaitUntilCommand(BooleanSupplier)`** — waits until a condition becomes true. The condition is polled every loop.
+
+```java
+sequence(
+    new ArmToPositionCommand(arm, 90.0),
+    new WaitUntilCommand(arm::atTarget),   // don't proceed until arm is in position
+    new ShootCommand(shooter)
+);
+```
+
+<Note>
+`WaitUntilCommand` is strictly better than `WaitCommand` for sensor-gated sequences. A fixed wait assumes timing; WaitUntilCommand responds to reality. Prefer it whenever a sensor or subsystem state is available.
+</Note>
+
+## Inline command shortcuts
+
+Several common patterns have one-line shorthand:
+
+```java
+// Run a lambda as a command (repeats each execute loop)
+Commands.run(() -> arm.setTargetAngle(90.0), arm)
+
+// Run a lambda exactly once
+Commands.runOnce(() -> drive.resetEncoders(), drive)
+
+// Run a command, then stop after N seconds
+new ArmCommand(arm).withTimeout(3.0)
+
+// Add a condition that cancels the command if it becomes true
+new DriveCommand(drive).until(drive::atTarget)
+
+// Print something for debugging (no requirements)
+Commands.print("Reached waypoint 1")
+```
+
+## Building a complete auto routine
+
+Here is a full 5-step auto routine using composition:
+
+```java
+public Command getAutonomousCommand() {
+    return sequence(
+        // Step 1: Reset sensors
+        runOnce(() -> {
+            drive.resetEncoders();
+            arm.resetPosition();
+        }, drive, arm),
+
+        // Step 2: Drive forward and raise arm at the same time
+        parallel(
+            new DriveToDistanceCommand(drive, 1.0),
+            new ArmToPositionCommand(arm, 120.0)
+        ),
+
+        // Step 3: Wait until the arm is actually at position (sensor-gated)
+        new WaitUntilCommand(arm::atTarget),
+
+        // Step 4: Shoot for up to 1.5 seconds, or until piece is gone
+        race(
+            new ShootCommand(shooter),
+            new WaitCommand(1.5)
+        ),
+
+        // Step 5: Retract and back up simultaneously
+        parallel(
+            new ArmToPositionCommand(arm, 0.0),
+            new DriveToDistanceCommand(drive, -0.5)
+        )
+    );
+}
+```
+
+This is every step readable at a glance. Changing the arm target angle for a different scoring position is a one-number change. Swapping step 4 to a different game element takes one line.
+
+## Reusing commands across auto variants
+
+The real power is reuse. Build named command factories in `RobotContainer` or an `Autos` class:
+
+```java
+public class Autos {
+    public static Command scoreLow(ArmSubsystem arm, ShooterSubsystem shooter) {
+        return sequence(
+            new ArmToPositionCommand(arm, 45.0),
+            new WaitUntilCommand(arm::atTarget),
+            new ShootCommand(shooter).withTimeout(1.0)
+        );
+    }
+
+    public static Command scoreHigh(ArmSubsystem arm, ShooterSubsystem shooter) {
+        return sequence(
+            new ArmToPositionCommand(arm, 120.0),
+            new WaitUntilCommand(arm::atTarget),
+            run(() -> shooter.setRPM(5000), shooter).withTimeout(1.5)
+        );
+    }
+
+    public static Command twoGamePieceAuto(
+            DriveSubsystem drive,
+            ArmSubsystem arm,
+            ShooterSubsystem shooter,
+            IntakeSubsystem intake) {
+        return sequence(
+            scoreLow(arm, shooter),
+            parallel(
+                new DriveToDistanceCommand(drive, 2.0),
+                sequence(
+                    new WaitCommand(0.5),         // arm clear before intake
+                    new IntakeCommand(intake).withTimeout(2.0)
+                )
+            ),
+            new WaitUntilCommand(intake::hasPiece),
+            scoreHigh(arm, shooter)
+        );
+    }
+}
+```
+
+<Note>
+Static factory methods that return `Command` objects are the cleanest way to organize autonomous routines. They compose naturally, are easy to unit-test, and keep `RobotContainer` readable.
+</Note>
+
+## Key takeaways
+
+- `SequentialCommandGroup` — one at a time, in order, waits for each to finish.
+- `ParallelCommandGroup` — all at once, finishes when all finish.
+- `ParallelRaceGroup` — all at once, finishes when any one finishes; others are interrupted.
+- `ParallelDeadlineGroup` — all at once, finishes when the first (deadline) command finishes.
+- `Commands.sequence()` and `Commands.parallel()` are cleaner factory alternatives to `new XxxCommandGroup(...)`.
+- `WaitUntilCommand` is always better than `WaitCommand` when a sensor or state is available.
+- Build named factory methods — compose those in autonomous routines for readability and reuse.
+
+## Common confusions
+
+**"My parallel group throws 'CommandScheduler: Commands in parallel group share requirements'."** Two commands in the group require the same subsystem. Split them into a sequential group, or redesign so the subsystem is only used by one command at a time.
+
+**"WaitUntilCommand is waiting forever."** The `BooleanSupplier` is never returning true. Add telemetry: `Commands.print("atTarget: " + arm.atTarget())` before the wait step to debug the condition.
+
+**"I used race() but the command that 'wins' is wrong."** `race()` ends when *any* command finishes — including `WaitCommand`. If the timer fires first, the other commands are interrupted. Use `deadline()` if one specific command should be the termination condition.
+
+**"My sequence skips step 2."** Check that step 1's `isFinished()` actually returns true. If it immediately returns true (e.g., encoder is already at zero when the command starts and you forgot to reset it), step 2 starts and ends before you notice.
+
+## Challenge
+
+<Try>
+Design a command composition for this 3-game-piece autonomous routine:
+
+1. Drive forward 0.5 m while running the intake simultaneously.
+2. Wait until the intake confirms it has a piece.
+3. Score the piece (drive 1.5 m forward, then shoot for up to 1 s).
+4. Drive back to the starting zone (1.5 m backward).
+5. Repeat steps 1-2 for a second piece, then score it.
+
+What composition type does each step use? Where does WaitUntilCommand appear? What commands could be extracted into reusable factory methods?
+</Try>
+
+<CodeEditor
+  client:load
+  starterCode={`// Simulate command composition execution order.
+// Each "command" is represented as a named step that prints when it runs.
+// Build a sequential group that runs: DriveForward → Shoot → DriveBack
+// Inside Shoot, use a "race": ShootCommand vs a 1.5s timer.
+// The race ends when the shorter one finishes.
+
+import java.util.ArrayList;
+import java.util.List;
+
+public class CompositionDemo {
+
+    // Simulated command that just records its name and duration
+    static class FakeCommand {
+        String name;
+        int durationTicks; // how many ticks before isFinished
+        int ticksRun = 0;
+
+        FakeCommand(String name, int durationTicks) {
+            this.name = name;
+            this.durationTicks = durationTicks;
+        }
+
+        void initialize() { System.out.println("START: " + name); }
+        void execute() { ticksRun++; }
+        boolean isFinished() { return ticksRun >= durationTicks; }
+        void end() { System.out.println("END:   " + name + " (ran " + ticksRun + " ticks)"); }
+    }
+
+    // Run a sequence of commands one at a time
+    static void runSequence(FakeCommand... commands) {
+        for (FakeCommand cmd : commands) {
+            cmd.initialize();
+            while (!cmd.isFinished()) cmd.execute();
+            cmd.end();
+        }
+    }
+
+    // Run a race: first to finish wins, print which won
+    static void runRace(FakeCommand a, FakeCommand b) {
+        a.initialize();
+        b.initialize();
+        while (!a.isFinished() && !b.isFinished()) {
+            a.execute();
+            b.execute();
+        }
+        String winner = a.isFinished() ? a.name : b.name;
+        System.out.println("RACE WON BY: " + winner);
+        a.end();
+        b.end();
+    }
+
+    public static void main(String[] args) {
+        FakeCommand driveForward = new FakeCommand("DriveForward(1.0m)", 5);
+        FakeCommand shootCmd     = new FakeCommand("ShootCommand",        3);
+        FakeCommand timer        = new FakeCommand("WaitCommand(1.5s)",   8); // timer is slower
+        FakeCommand driveBack    = new FakeCommand("DriveBack(1.0m)",     5);
+
+        // TODO: use runSequence and runRace to simulate:
+        // 1. DriveForward
+        // 2. Race between shootCmd and timer
+        // 3. DriveBack
+    }
+}`}
+  testCases={[
+    { label: "DriveForward starts first", expected: "START: DriveForward(1.0m)" },
+    { label: "Shoot races timer", expected: "START: ShootCommand" },
+    { label: "ShootCommand wins race (shorter)", expected: "RACE WON BY: ShootCommand" },
+    { label: "DriveBack runs last", expected: "START: DriveBack(1.0m)" },
+  ]}
+  hint="Call runSequence(driveForward) first, then runRace(shootCmd, timer), then runSequence(driveBack). Each function handles one step."
+/>
+
+## What's next
+
+In **Software Engineering Lesson 04**, we'll cover the Advanced Trigger System — how to build reactive, event-driven bindings from sensors and computed conditions, without any polling code in `periodic()`.

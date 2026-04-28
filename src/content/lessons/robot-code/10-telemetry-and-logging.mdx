@@ -1,0 +1,348 @@
+---
+track: robot-code
+lesson: 10
+title: Telemetry and Logging
+prereqs: [robot-code-05]
+objectives:
+  - Publish values to SmartDashboard using putNumber, putBoolean, and putString
+  - Organize dashboard data into named tabs with Shuffleboard
+  - Explain the NetworkTables protocol and how SmartDashboard uses it
+  - Record match data to a log file with DataLog for post-match review
+  - Decide what to log versus what to omit based on usefulness and bandwidth cost
+---
+
+import Key from '../../../components/Key.astro';
+import Try from '../../../components/Try.astro';
+import Note from '../../../components/Note.astro';
+import Warn from '../../../components/Warn.astro';
+import Quiz from '../../../components/demos/Quiz.jsx';
+import CodeEditor from '../../../components/demos/CodeEditor.jsx';
+
+## Hook
+
+The robot behaves differently at the competition than it did in the shop. You can't reproduce it because you have no data. The motor current at the moment the arm stopped? Unknown. The encoder position when it missed the target? Unknown. The battery voltage when it browned out? Unknown.
+
+Good telemetry turns a mystery into a five-minute debug session. This lesson is about logging the right things, reading them during a match, and reviewing them afterward.
+
+## Core concept
+
+<Key>
+Telemetry is split into two concerns: live data (SmartDashboard and Shuffleboard, visible on the driver station laptop during the match) and recorded data (DataLog, written to a file for post-match analysis). Log enough to reconstruct what happened — but not so much that network bandwidth or CPU cycles become a problem.
+</Key>
+
+## NetworkTables
+
+Everything you see on SmartDashboard travels over **NetworkTables** — a key-value store that synchronizes over the robot's network (Wi-Fi at competitions, USB or Ethernet in the shop). Each entry has a string key and a typed value: `double`, `boolean`, `String`, `double[]`, etc.
+
+The robot is the **server**; driver station laptops and dashboard tools are **clients**. Values are pushed from server to client (and vice versa) approximately every 20 ms.
+
+`SmartDashboard` and `Shuffleboard` are both high-level wrappers around `NetworkTableInstance`. You rarely need to touch NetworkTables directly unless you're reading from an external tool like AdvantageScope or writing custom dashboard widgets.
+
+## SmartDashboard
+
+`edu.wpi.first.wpilibj.smartdashboard.SmartDashboard` is the simplest API. Call from anywhere (subsystem `periodic()`, command `execute()`, `Robot.java`):
+
+```java
+import edu.wpi.first.wpilibj.smartdashboard.SmartDashboard;
+
+// Publishing values
+SmartDashboard.putNumber("Arm/angleDeg",    arm.getAngleDeg());
+SmartDashboard.putNumber("Drive/leftSpeed", drive.getLeftSpeed());
+SmartDashboard.putBoolean("Shooter/atSpeed", shooter.isAtTargetRpm());
+SmartDashboard.putString("Auto/selected",   autoChooser.getSelected().getName());
+
+// Reading values back (for tuning from dashboard — use carefully)
+double kP = SmartDashboard.getNumber("Shooter/kP", 0.0002);
+```
+
+**Key naming convention:** Use `Subsystem/property` (e.g., `"Arm/angleDeg"`). This makes keys self-documenting and groups them alphabetically in dashboard tools.
+
+Best place to call `putNumber` / `putBoolean`: the subsystem's `periodic()` method. It runs every loop whether or not a command is active.
+
+```java
+// ArmSubsystem.java
+@Override
+public void periodic() {
+    SmartDashboard.putNumber("Arm/angleDeg",       getAngleDeg());
+    SmartDashboard.putNumber("Arm/motorCurrent",   motor.getOutputCurrent());
+    SmartDashboard.putBoolean("Arm/atSetpoint",    isAtSetpoint());
+    SmartDashboard.putNumber("Arm/setpointDeg",    targetDeg);
+}
+```
+
+<Note>
+SmartDashboard keys are global — a typo in one class silently creates a second entry instead of updating the first. Use constants or a central `TelemetryKeys` class if your team is large enough to step on each other's keys.
+</Note>
+
+## Shuffleboard
+
+`edu.wpi.first.wpilibj.shuffleboard.Shuffleboard` organizes data into **tabs** and **layouts** with explicit widget types. It's more verbose but gives you a structured driver dashboard:
+
+```java
+import edu.wpi.first.wpilibj.shuffleboard.Shuffleboard;
+import edu.wpi.first.wpilibj.shuffleboard.ShuffleboardTab;
+import edu.wpi.first.wpilibj.shuffleboard.BuiltInWidgets;
+import java.util.Map;
+
+ShuffleboardTab driveTab = Shuffleboard.getTab("Drive");
+
+// Add a number widget with position and size
+driveTab.addNumber("Left Speed",  drive::getLeftSpeed)
+        .withWidget(BuiltInWidgets.kNumberBar)
+        .withProperties(Map.of("min", -1.0, "max", 1.0))
+        .withPosition(0, 0)
+        .withSize(2, 1);
+
+driveTab.addBoolean("Field Oriented", drive::isFieldOriented)
+        .withWidget(BuiltInWidgets.kBooleanBox)
+        .withPosition(2, 0);
+
+// Add the auto chooser as a combo box
+ShuffleboardTab matchTab = Shuffleboard.getTab("Match");
+matchTab.add("Auto Chooser", autoChooser)
+        .withWidget(BuiltInWidgets.kComboBoxChooser)
+        .withPosition(0, 0)
+        .withSize(2, 1);
+```
+
+<Note>
+Shuffleboard layout calls (`.withPosition()`, `.withSize()`) only apply to the desktop Shuffleboard app, not to the WPILib glass window. Both read from NetworkTables; only Shuffleboard respects layout metadata.
+</Note>
+
+**SmartDashboard vs Shuffleboard:**
+
+| | SmartDashboard | Shuffleboard |
+|---|---|---|
+| Setup effort | One line per value | Verbose, layout config needed |
+| Organization | Alphabetical list | Tabs, grids, widget types |
+| Best for | Debugging, quick inspection | Driver-facing match dashboard |
+
+Use SmartDashboard in subsystem `periodic()` for diagnostics; use Shuffleboard in `RobotContainer` or `robotInit()` for the match UI.
+
+## DataLog
+
+**Live telemetry is limited by Wi-Fi bandwidth and latency.** For high-frequency data (motor currents every 20 ms, full encoder arrays, CAN traffic) use `DataLog`, which writes directly to the roboRIO's filesystem.
+
+```java
+import edu.wpi.first.util.datalog.DataLog;
+import edu.wpi.first.util.datalog.DoubleLogEntry;
+import edu.wpi.first.util.datalog.BooleanLogEntry;
+import edu.wpi.first.util.datalog.StringLogEntry;
+import edu.wpi.first.wpilibj.DataLogManager;
+
+// In Robot.robotInit() — call once
+DataLogManager.start();  // writes to /home/lvuser/logs/ on the roboRIO
+
+// Optionally also mirror to NetworkTables for live SmartDashboard view:
+DataLogManager.logNetworkTables(true);
+```
+
+```java
+// In ArmSubsystem — declare log entries as fields
+private final DoubleLogEntry  angleLog    = new DoubleLogEntry( DataLogManager.getLog(), "/Arm/angleDeg");
+private final DoubleLogEntry  currentLog  = new DoubleLogEntry( DataLogManager.getLog(), "/Arm/motorCurrent");
+private final BooleanLogEntry atSetLog    = new BooleanLogEntry(DataLogManager.getLog(), "/Arm/atSetpoint");
+
+@Override
+public void periodic() {
+    double angle   = getAngleDeg();
+    double current = motor.getOutputCurrent();
+    boolean atSet  = isAtSetpoint();
+
+    // Log to file (high frequency, no bandwidth concern)
+    angleLog.append(angle);
+    currentLog.append(current);
+    atSetLog.append(atSet);
+
+    // Also publish live (driver-visible, lower frequency is fine)
+    SmartDashboard.putNumber("Arm/angleDeg",    angle);
+    SmartDashboard.putBoolean("Arm/atSetpoint", atSet);
+}
+```
+
+Log files are written to `/home/lvuser/logs/` as `.wpilog` files. Download them with the roboRIO web dashboard (roborio-XXXX-frc.local) or via SSH.
+
+## AdvantageScope
+
+AdvantageScope (by team 6328 Mechanical Advantage) is the standard tool for viewing `.wpilog` files:
+- Opens log files from disk or live-connects to the robot over NetworkTables.
+- Plots any logged value over time with synchronized playback.
+- 3D robot pose visualization, mechanism2D views, swerve module state displays.
+- Export to CSV for deeper analysis.
+
+After a match where something went wrong: download the log, open in AdvantageScope, scrub to the timestamp of the problem.
+
+## What to log
+
+**Always log:**
+- Motor output (percent or voltage) and current for every mechanism
+- Encoder positions and velocities
+- PID setpoints and actual values (so you can see tracking error)
+- Battery voltage
+- Command scheduler active commands
+- Match-relevant booleans (game piece detected, at setpoint, limit switches)
+- Auto mode selected and start timestamp
+
+**Log if useful:**
+- Camera latency and target data (for vision-assisted aiming)
+- CAN bus utilization
+- Loop overrun warnings
+
+**Don't log:**
+- Raw camera frames (megabytes per frame)
+- Values that never change after init (CAN IDs, constants)
+- Intermediate calculation variables that aren't interpretable without context
+- Everything at 1 kHz when 50 Hz is sufficient
+
+<Warn>
+Logging too much doesn't crash the robot, but it can saturate the roboRIO filesystem over a long practice session and cause `DataLogManager` to drop entries. Keep periodic log entries to values that meaningfully change each loop.
+</Warn>
+
+## Logging strategy for a drivetrain
+
+A complete logging setup for a differential drivetrain:
+
+```java
+public class DriveSubsystem extends SubsystemBase {
+    private final WPI_TalonFX leftLeader  = new WPI_TalonFX(1);
+    private final WPI_TalonFX rightLeader = new WPI_TalonFX(3);
+
+    // DataLog entries
+    private final DoubleLogEntry leftPositionLog =
+        new DoubleLogEntry(DataLogManager.getLog(), "/Drive/leftPositionMeters");
+    private final DoubleLogEntry rightPositionLog =
+        new DoubleLogEntry(DataLogManager.getLog(), "/Drive/rightPositionMeters");
+    private final DoubleLogEntry leftVelocityLog =
+        new DoubleLogEntry(DataLogManager.getLog(), "/Drive/leftVelocityMps");
+    private final DoubleLogEntry rightVelocityLog =
+        new DoubleLogEntry(DataLogManager.getLog(), "/Drive/rightVelocityMps");
+    private final DoubleLogEntry leftCurrentLog =
+        new DoubleLogEntry(DataLogManager.getLog(), "/Drive/leftCurrentAmps");
+    private final DoubleLogEntry rightCurrentLog =
+        new DoubleLogEntry(DataLogManager.getLog(), "/Drive/rightCurrentAmps");
+    private final DoubleLogEntry headingLog =
+        new DoubleLogEntry(DataLogManager.getLog(), "/Drive/headingDeg");
+
+    @Override
+    public void periodic() {
+        double lPos  = getLeftPositionMeters();
+        double rPos  = getRightPositionMeters();
+        double lVel  = getLeftVelocityMps();
+        double rVel  = getRightVelocityMps();
+        double lCurr = leftLeader.getStatorCurrent();
+        double rCurr = rightLeader.getStatorCurrent();
+        double hdg   = getHeadingDeg();
+
+        // File logging
+        leftPositionLog.append(lPos);
+        rightPositionLog.append(rPos);
+        leftVelocityLog.append(lVel);
+        rightVelocityLog.append(rVel);
+        leftCurrentLog.append(lCurr);
+        rightCurrentLog.append(rCurr);
+        headingLog.append(hdg);
+
+        // SmartDashboard (live, driver visible)
+        SmartDashboard.putNumber("Drive/leftPositionM",   lPos);
+        SmartDashboard.putNumber("Drive/rightPositionM",  rPos);
+        SmartDashboard.putNumber("Drive/headingDeg",      hdg);
+        SmartDashboard.putNumber("Drive/leftCurrentAmps", lCurr);
+        SmartDashboard.putNumber("Drive/rightCurrentAmps",rCurr);
+    }
+}
+```
+
+<Quiz
+  client:load
+  question="Where is the best place to call SmartDashboard.putNumber() for a subsystem's sensor values?"
+  options={[
+    "In Robot.robotPeriodic(), reading from each subsystem",
+    "In the subsystem's periodic() method",
+    "In each Command's execute() method",
+    "In RobotContainer's constructor, once at startup"
+  ]}
+  correct={1}
+  explanation="The subsystem's periodic() method runs every 20ms regardless of which command is active. Putting telemetry calls here ensures values are always up to date. Commands are not always running, and Robot.robotPeriodic() would require Robot.java to know about every subsystem's internals — a layering violation."
+/>
+
+<Quiz
+  client:load
+  question="What is the primary advantage of DataLog over SmartDashboard for high-frequency data?"
+  options={[
+    "DataLog is visible live on the driver station laptop",
+    "DataLog writes to the roboRIO filesystem, bypassing Wi-Fi bandwidth limits",
+    "DataLog automatically formats data as graphs in Shuffleboard",
+    "DataLog uses less CPU than SmartDashboard.putNumber()"
+  ]}
+  correct={1}
+  explanation="SmartDashboard sends data over Wi-Fi via NetworkTables, which has limited bandwidth — logging everything at 50 Hz would saturate the link. DataLog writes directly to the roboRIO's filesystem at full loop rate without using the network at all. You download the file after the match for analysis."
+/>
+
+## Key takeaways
+
+- `SmartDashboard.putNumber/putBoolean/putString` publish live data over NetworkTables — call from subsystem `periodic()`.
+- `Shuffleboard` organizes data into tabs and widget layouts for a structured driver dashboard.
+- `DataLogManager.start()` + `DoubleLogEntry`/`BooleanLogEntry` record full-rate data to the roboRIO filesystem for post-match analysis.
+- AdvantageScope reads `.wpilog` files and provides synchronized time-scrubbing, 3D visualization, and CSV export.
+- Log motor currents, positions, velocities, setpoints, and key booleans. Omit constants, camera frames, and rarely-changing values.
+
+## Common confusions
+
+**"SmartDashboard shows stale values."** You're probably only calling `putNumber` inside a command's `execute()`, which only runs when that command is scheduled. Move telemetry to the subsystem `periodic()`.
+
+**"My DataLog file is missing."** `DataLogManager.start()` must be called before any `DoubleLogEntry` is created. Call it in `robotInit()` as the very first line, before `new RobotContainer()`.
+
+**"I can't find the log file."** Connect to the roboRIO web interface at `roborio-XXXX-frc.local` (replace XXXX with your team number), navigate to `/home/lvuser/logs/`, and download the `.wpilog` file.
+
+**"Shuffleboard layout keeps resetting."** Shuffleboard saves layout to a `.json` file on the driver station. If two team members each have their own laptop configuration, layouts will differ. Commit the Shuffleboard layout file to your repo.
+
+## Challenge
+
+<Try>
+Design a logging strategy for a drivetrain subsystem in pure Java. The challenge simulates a periodic loop: you will print what each logging call outputs, demonstrating that the right values are logged each tick. No hardware imports — use simple variables.
+</Try>
+
+<CodeEditor
+  client:load
+  starterCode={`// Simulate telemetry output for a drivetrain subsystem.
+// Complete the periodic() method to log all required values.
+// Use System.out.println to simulate SmartDashboard.putNumber etc.
+//
+// Required outputs each call (in any order):
+//   "Drive/leftPositionM: <value>"
+//   "Drive/rightPositionM: <value>"
+//   "Drive/headingDeg: <value>"
+//   "Drive/leftCurrentA: <value>"
+//   "Drive/rightCurrentA: <value>"
+
+public class DriveLogging {
+
+    // Simulated sensor values
+    static double leftPosition  = 1.23;
+    static double rightPosition = 1.19;
+    static double headingDeg    = 5.4;
+    static double leftCurrent   = 12.3;
+    static double rightCurrent  = 11.9;
+
+    static void periodic() {
+        // TODO: print all 5 required telemetry lines
+        // Format: "Drive/leftPositionM: " + leftPosition   (and so on)
+    }
+
+    public static void main(String[] args) {
+        periodic(); // simulate one loop tick
+    }
+}`}
+  testCases={[
+    { label: "left position logged",   expected: "Drive/leftPositionM: 1.23"   },
+    { label: "right position logged",  expected: "Drive/rightPositionM: 1.19"  },
+    { label: "heading logged",         expected: "Drive/headingDeg: 5.4"        },
+    { label: "left current logged",    expected: "Drive/leftCurrentA: 12.3"     },
+    { label: "right current logged",   expected: "Drive/rightCurrentA: 11.9"    }
+  ]}
+  hint="Five println calls, one for each field. Format: System.out.println(&quot;Drive/leftPositionM: &quot; + leftPosition);"
+/>
+
+## What's next
+
+In **Lesson 11: Testing and Simulation**, we take the robot off the hardware entirely — running robot code on the desktop with WPILib's simulation framework, writing JUnit tests for subsystem logic, and simulating encoders and gyros without touching a motor.

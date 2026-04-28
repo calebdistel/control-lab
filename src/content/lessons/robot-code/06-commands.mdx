@@ -1,0 +1,480 @@
+---
+track: robot-code
+lesson: 6
+title: Commands
+prereqs: [robot-code-05]
+objectives:
+  - Describe the four lifecycle methods of a command and when each is called
+  - Implement a complete command by extending CommandBase
+  - Use InstantCommand, RunCommand, and FunctionalCommand for simple actions without full classes
+  - Compose commands into sequences and parallel groups using SequentialCommandGroup and ParallelCommandGroup
+  - Explain why addRequirements() is essential and what happens when it is omitted
+---
+
+import Key from '../../../components/Key.astro';
+import Try from '../../../components/Try.astro';
+import Note from '../../../components/Note.astro';
+import Warn from '../../../components/Warn.astro';
+import CodeTrace from '../../../components/demos/CodeTrace.jsx';
+import Quiz from '../../../components/demos/Quiz.jsx';
+import CodeEditor from '../../../components/demos/CodeEditor.jsx';
+
+## Hook
+
+You've wired up a subsystem with motors and sensors. Now you need the arm to move to 90 degrees when a button is pressed, hold there while the button is held, and return to zero when it's released. How do you express that in code?
+
+Not with a flag variable and a switch statement hidden in `robotPeriodic()`. That approach works for one button — it becomes unmanageable for five. Commands give you a clean, composable way to describe actions with explicit start, run, and stop behavior. They're the reason teams can run 15-step autonomous routines written by three different people without catastrophic conflicts.
+
+## Core concept
+
+<Key>
+A command is a Java object that encapsulates one robot action. It has four lifecycle methods: `initialize()` runs once when the command starts, `execute()` runs every loop iteration while it's active, `isFinished()` tells the scheduler when to stop it, and `end(boolean interrupted)` runs once for cleanup. The CommandScheduler drives this lifecycle automatically.
+</Key>
+
+## The command lifecycle
+
+```
+           schedule()
+               │
+               ▼
+        ┌─────────────┐
+        │ initialize() │  ← runs once
+        └──────┬──────┘
+               │
+               ▼
+        ┌─────────────┐
+        │  execute()   │  ← runs every 20 ms
+        └──────┬──────┘
+               │
+        isFinished()?
+          No  │   Yes
+          │   │
+          │   ▼
+          │  ┌─────────────────────┐
+          │  │ end(interrupted=false)│  ← normal completion
+          │  └─────────────────────┘
+          │
+          └── (loops back to execute())
+
+  If another command interrupts:
+        ┌─────────────────────┐
+        │ end(interrupted=true) │  ← cleanup, don't assume finished
+        └─────────────────────┘
+```
+
+| Method | When it runs | Typical use |
+|---|---|---|
+| `initialize()` | Once, at command start | Reset encoder, set initial setpoint, start timer |
+| `execute()` | Every loop, while active | Apply motor output, calculate PID, update state |
+| `isFinished()` | Every loop, after execute() | Check if goal reached, timer expired, etc. |
+| `end(boolean interrupted)` | Once, when done | Stop motors, retract cylinder, log completion |
+
+The `interrupted` parameter in `end()` is `true` if another command cancelled this one, `false` if `isFinished()` returned `true`. This lets you clean up differently depending on whether you completed successfully.
+
+## Extending `CommandBase`
+
+```java
+import edu.wpi.first.wpilibj2.command.CommandBase;
+import edu.wpi.first.wpilibj.Timer;
+
+public class DriveForDistance extends CommandBase {
+
+    private final DriveSubsystem drive;
+    private final double targetInches;
+    private static final double TOLERANCE_INCHES = 1.0;
+
+    public DriveForDistance(DriveSubsystem drive, double targetInches) {
+        this.drive = drive;
+        this.targetInches = targetInches;
+        addRequirements(drive); // MUST include this
+    }
+
+    @Override
+    public void initialize() {
+        drive.resetEncoders(); // start measuring from zero
+    }
+
+    @Override
+    public void execute() {
+        double remaining = targetInches - drive.getAverageDistanceInches();
+        double speed = remaining > 0 ? 0.5 : -0.5; // simple bang-bang
+        drive.tankDrive(speed, speed);
+    }
+
+    @Override
+    public boolean isFinished() {
+        return Math.abs(targetInches - drive.getAverageDistanceInches()) < TOLERANCE_INCHES;
+    }
+
+    @Override
+    public void end(boolean interrupted) {
+        drive.tankDrive(0, 0); // always stop motors on exit
+        if (interrupted) {
+            System.out.println("DriveForDistance interrupted at "
+                + drive.getAverageDistanceInches() + " inches");
+        }
+    }
+}
+```
+
+The most common beginner mistake: forgetting `addRequirements()`. Without it, two commands can both call `drive.tankDrive()` simultaneously, and neither the scheduler nor you will know who "won."
+
+<Warn>
+If you forget `addRequirements()`, the scheduler cannot enforce exclusive ownership. Two commands will happily run at the same time against the same subsystem. The hardware output will be the result of whichever command ran last in the scheduler loop — unpredictable and impossible to debug under pressure.
+</Warn>
+
+## Built-in command factories
+
+Writing a full class for every action is verbose for simple cases. WPILib provides factory classes:
+
+### `InstantCommand`
+
+Runs `initialize()` once, then immediately finishes. Perfect for toggling state.
+
+```java
+// As an anonymous class (old style):
+new InstantCommand(() -> claw.closeClaw(), claw);
+
+// In a button binding:
+new JoystickButton(controller, XboxController.Button.kA.value)
+    .onTrue(new InstantCommand(() -> intake.deployArm(), intake));
+```
+
+### `RunCommand`
+
+Runs `execute()` every loop and never finishes on its own. Requires manual cancellation (e.g., the button is released).
+
+```java
+// Drive while button is held:
+new JoystickButton(controller, XboxController.Button.kRightBumper.value)
+    .whileTrue(new RunCommand(
+        () -> driveSubsystem.arcadeDrive(
+            controller.getLeftY(),
+            controller.getRightX()
+        ),
+        driveSubsystem
+    ));
+```
+
+### `FunctionalCommand`
+
+The full lifecycle in a single call — useful when you need `initialize`/`execute`/`end`/`isFinished` but don't want a separate file:
+
+```java
+new FunctionalCommand(
+    () -> drive.resetEncoders(),                              // initialize
+    () -> drive.tankDrive(0.5, 0.5),                         // execute
+    interrupted -> drive.tankDrive(0, 0),                    // end
+    () -> drive.getAverageDistanceInches() >= 60.0,          // isFinished
+    drive                                                    // requirements
+);
+```
+
+Use `FunctionalCommand` sparingly — once the logic gets complex, a named class is more readable.
+
+## Command composition
+
+The power of commands comes from composing them. WPILib provides two primary group types:
+
+### `SequentialCommandGroup`
+
+Runs commands one after another. The next command starts only after the previous one finishes.
+
+```java
+import edu.wpi.first.wpilibj2.command.SequentialCommandGroup;
+
+public class ScoreAuto extends SequentialCommandGroup {
+    public ScoreAuto(DriveSubsystem drive, ArmSubsystem arm, ClawSubsystem claw) {
+        addCommands(
+            new DriveForDistance(drive, 72),          // drive 72 inches forward
+            new ArmToAngle(arm, 90),                  // raise arm to 90 degrees
+            new InstantCommand(claw::closeClaw, claw), // grab game piece
+            new ArmToAngle(arm, 0),                   // lower arm
+            new DriveForDistance(drive, -72)           // back up
+        );
+    }
+}
+```
+
+### `ParallelCommandGroup`
+
+Runs commands simultaneously. The group finishes when **all** commands finish.
+
+```java
+import edu.wpi.first.wpilibj2.command.ParallelCommandGroup;
+
+// Raise arm AND spin up shooter at the same time
+new ParallelCommandGroup(
+    new ArmToAngle(arm, 75),
+    new SpinUpShooter(shooter, 4500) // RPM
+)
+```
+
+### `ParallelRaceGroup`
+
+Runs commands simultaneously. Finishes when **any one** command finishes, then cancels the rest.
+
+```java
+import edu.wpi.first.wpilibj2.command.ParallelRaceGroup;
+
+// Intake until a ball is detected, then stop — timeout after 3 seconds
+new ParallelRaceGroup(
+    new RunIntake(intake),           // never finishes on its own
+    new WaitUntilCommand(intake::hasBall), // finishes when sensor triggers
+    new WaitCommand(3.0)             // safety timeout
+)
+```
+
+### `ParallelDeadlineGroup`
+
+Like `ParallelRaceGroup` but one specific command is the "deadline" — the group ends when that one finishes.
+
+```java
+import edu.wpi.first.wpilibj2.command.ParallelDeadlineGroup;
+
+// Drive while also tracking with the limelight — stop when drive finishes
+new ParallelDeadlineGroup(
+    new DriveForDistance(drive, 48), // deadline
+    new TrackTarget(vision)          // runs alongside, cancelled when drive ends
+)
+```
+
+### Inline composition with decorators
+
+Commands also expose chainable decorator methods:
+
+```java
+new ArmToAngle(arm, 90)
+    .withTimeout(3.0)                 // cancel after 3 seconds if not finished
+    .andThen(new InstantCommand(claw::closeClaw, claw))  // run next in sequence
+    .beforeStarting(() -> System.out.println("Starting arm sequence"))
+    .finallyDo(interrupted -> arm.setSpeed(0));
+```
+
+<Note>
+Decorator methods return a new command wrapping the original — they don't modify in place. Chain them like you would Java stream operations: each call returns the decorated version.
+</Note>
+
+## Complete example: coordinated autonomous sequence
+
+```java
+import edu.wpi.first.wpilibj2.command.SequentialCommandGroup;
+import edu.wpi.first.wpilibj2.command.ParallelCommandGroup;
+import edu.wpi.first.wpilibj2.command.InstantCommand;
+import edu.wpi.first.wpilibj2.command.WaitCommand;
+
+public class TwoGamePieceAuto extends SequentialCommandGroup {
+
+    public TwoGamePieceAuto(
+        DriveSubsystem drive,
+        ArmSubsystem arm,
+        ClawSubsystem claw
+    ) {
+        addCommands(
+            // 1. Start: arm up + drive forward simultaneously
+            new ParallelCommandGroup(
+                new ArmToAngle(arm, 90),
+                new DriveForDistance(drive, 24)
+            ),
+
+            // 2. Grab first game piece
+            new InstantCommand(claw::closeClaw, claw),
+            new WaitCommand(0.3), // let cylinder fully extend
+
+            // 3. Back up and lower arm
+            new ParallelCommandGroup(
+                new DriveForDistance(drive, -24),
+                new ArmToAngle(arm, 0)
+            ),
+
+            // 4. Score position
+            new DriveForDistance(drive, 60),
+            new ArmToAngle(arm, 45),
+            new InstantCommand(claw::openClaw, claw),
+            new WaitCommand(0.2),
+
+            // 5. Return to start
+            new ParallelCommandGroup(
+                new DriveForDistance(drive, -60),
+                new ArmToAngle(arm, 0)
+            )
+        );
+    }
+}
+```
+
+## Full lifecycle trace
+
+<CodeTrace
+  client:load
+  variables={{ command: "none", phase: "idle", armDeg: "0.0", finished: "false", interrupted: "false" }}
+  steps={[
+    { code: "new ArmToAngle(arm, 90).schedule()",
+      state: { command: "ArmToAngle(90)", phase: "scheduled", armDeg: "0.0",  finished: "false", interrupted: "false" },
+      comment: "placed in scheduler queue" },
+    { code: "initialize()",
+      state: { command: "ArmToAngle(90)", phase: "initialize", armDeg: "0.0",  finished: "false", interrupted: "false" },
+      comment: "runs once — set up PID setpoint" },
+    { code: "execute() — loop 1",
+      state: { command: "ArmToAngle(90)", phase: "execute",    armDeg: "5.2",  finished: "false", interrupted: "false" },
+      comment: "PID output applied, arm moving" },
+    { code: "execute() — loop 2",
+      state: { command: "ArmToAngle(90)", phase: "execute",    armDeg: "18.7", finished: "false", interrupted: "false" },
+      comment: "still moving" },
+    { code: "execute() — loop 15",
+      state: { command: "ArmToAngle(90)", phase: "execute",    armDeg: "89.1", finished: "false", interrupted: "false" },
+      comment: "approaching target" },
+    { code: "isFinished() returns true (|90 - 89.1| < 2.0)",
+      state: { command: "ArmToAngle(90)", phase: "isFinished", armDeg: "89.1", finished: "true",  interrupted: "false" },
+      comment: "within tolerance" },
+    { code: "end(interrupted=false)",
+      state: { command: "ArmToAngle(90)", phase: "end",        armDeg: "89.1", finished: "true",  interrupted: "false" },
+      comment: "normal completion — stop motor" },
+    { code: "command removed from scheduler",
+      state: { command: "none",           phase: "idle",       armDeg: "89.1", finished: "true",  interrupted: "false" },
+      comment: "subsystem free — default command resumes" },
+  ]}
+/>
+
+## Interrupted lifecycle trace
+
+<CodeTrace
+  client:load
+  variables={{ command: "DriveForDistance(60in)", phase: "execute", distIn: "12.0", interrupted: "false" }}
+  steps={[
+    { code: "DriveForDistance(60) running",
+      state: { command: "DriveForDistance(60in)", phase: "execute",     distIn: "12.0", interrupted: "false" },
+      comment: "driving forward normally" },
+    { code: "New command EmergencyStop(drive) scheduled",
+      state: { command: "DriveForDistance(60in)", phase: "interrupted",  distIn: "12.0", interrupted: "true"  },
+      comment: "new command requires Drive — conflict detected" },
+    { code: "end(interrupted=true) on DriveForDistance",
+      state: { command: "EmergencyStop",           phase: "initialize",   distIn: "12.0", interrupted: "true"  },
+      comment: "old command cleaned up, new one starts" },
+    { code: "EmergencyStop.execute() — sets all motors to 0",
+      state: { command: "EmergencyStop",           phase: "execute",      distIn: "12.0", interrupted: "false" },
+      comment: "robot stopped safely" },
+  ]}
+/>
+
+## Key takeaways
+
+- Commands have four lifecycle methods: `initialize()`, `execute()`, `isFinished()`, `end(interrupted)`.
+- `initialize()` and `end()` each run exactly once. `execute()` and `isFinished()` run every loop while active.
+- Always call `addRequirements()` — it's what gives the scheduler the information it needs to prevent conflicts.
+- `InstantCommand`, `RunCommand`, and `FunctionalCommand` cover simple cases without full class boilerplate.
+- Sequential and parallel groups compose simple commands into complex behaviors declaratively.
+- `end(true)` signals interruption — clean up safely but don't assume the goal was reached.
+
+## Common confusions
+
+**"My command runs once and stops immediately."** `isFinished()` is probably returning `true` before `execute()` has done anything meaningful. This often happens when a state variable isn't initialized in `initialize()` (e.g., forgetting `drive.resetEncoders()` before checking distance traveled).
+
+**"My sequential group skips commands."** A command in the group's `isFinished()` may be returning `true` immediately (see above). Add a print statement in `initialize()` and `end()` of each command to trace which ones actually ran.
+
+**"My `InstantCommand` isn't doing anything."** Lambda captures in Java don't evaluate at call time — they evaluate at execution time. But if the object you're calling (e.g., `intake`) was null when the lambda was created, you'll get a NullPointerException silently if the scheduler swallows exceptions. Always check that your subsystem references are non-null.
+
+**"I added `withTimeout()` but the command still runs forever."** `withTimeout(3.0)` wraps the command in a `ParallelRaceGroup` with a `WaitCommand(3.0)`. It works correctly for commands that are scheduled directly. If the command is inside a `SequentialCommandGroup`, the group's command is the wrapper — confirm you're calling `withTimeout()` on the command object you're adding to the group.
+
+## Challenge
+
+<Try>
+Trace through a simplified command lifecycle in pure Java. Implement a `SimulatedCommand` class with `initialize()`, `execute()`, `isFinished()`, and `end(boolean)` methods, then write a simple scheduler loop that drives the lifecycle correctly. The command should run for exactly 5 execute() calls before finishing.
+</Try>
+
+<CodeEditor
+  client:load
+  starterCode={`public class CommandLifecycle {
+
+    /** A simulated command that counts execute() calls and finishes after a target count. */
+    static class SimulatedCommand {
+        private final String name;
+        private final int targetExecutions;
+        private int executionCount = 0;
+
+        SimulatedCommand(String name, int targetExecutions) {
+            this.name = name;
+            this.targetExecutions = targetExecutions;
+        }
+
+        public void initialize() {
+            executionCount = 0;
+            System.out.println(name + ".initialize()");
+        }
+
+        public void execute() {
+            executionCount++;
+            System.out.println(name + ".execute() [" + executionCount + "/" + targetExecutions + "]");
+        }
+
+        public boolean isFinished() {
+            return executionCount >= targetExecutions;
+        }
+
+        public void end(boolean interrupted) {
+            if (interrupted) {
+                System.out.println(name + ".end(interrupted=true) after " + executionCount + " executions");
+            } else {
+                System.out.println(name + ".end(interrupted=false) — completed normally");
+            }
+        }
+    }
+
+    /**
+     * Run the command through its lifecycle.
+     * Rules:
+     *   1. Call initialize() once.
+     *   2. Loop: call execute(), then check isFinished().
+     *      If isFinished() is true, call end(false) and stop the loop.
+     *   3. Safety limit: if the loop runs more than 20 iterations, call end(true) and break.
+     */
+    public static void runCommand(SimulatedCommand command) {
+        // TODO: implement the scheduler loop
+    }
+
+    public static void main(String[] args) {
+        SimulatedCommand cmd = new SimulatedCommand("DriveForDistance", 5);
+        runCommand(cmd);
+    }
+}`}
+  testCases={[
+    { label: "initialize() called once",           expected: "DriveForDistance.initialize()" },
+    { label: "execute() call 1",                   expected: "DriveForDistance.execute() [1/5]" },
+    { label: "execute() call 2",                   expected: "DriveForDistance.execute() [2/5]" },
+    { label: "execute() call 3",                   expected: "DriveForDistance.execute() [3/5]" },
+    { label: "execute() call 4",                   expected: "DriveForDistance.execute() [4/5]" },
+    { label: "execute() call 5",                   expected: "DriveForDistance.execute() [5/5]" },
+    { label: "end called with interrupted=false",  expected: "DriveForDistance.end(interrupted=false) — completed normally" },
+  ]}
+  hint="In runCommand(): call command.initialize(). Then use a while loop: call command.execute(), then check command.isFinished(). If true, call command.end(false) and break. Add a counter for the safety limit — if it exceeds 20, call command.end(true) and break."
+/>
+
+<Quiz
+  client:load
+  question="A command's isFinished() returns true on the very first call (before execute() runs). What happens?"
+  options={[
+    "execute() still runs at least once before the command ends",
+    "initialize() and end() run, but execute() never runs",
+    "The command is never started — the scheduler skips it",
+    "The command loops forever because isFinished() is checked after execute()"
+  ]}
+  correct={1}
+  explanation="The scheduler calls initialize() first, then alternates execute() and isFinished() checks. But if isFinished() returns true immediately (before the first execute()), the scheduler calls end() without ever calling execute(). This is intentional — a command that has already achieved its goal shouldn't bother executing. The order is: initialize → [execute → isFinished?] loop → end."
+/>
+
+<Quiz
+  client:load
+  question="You build a SequentialCommandGroup with three commands. The second command requires the same subsystem as the third. What happens when the second command finishes and the third starts?"
+  options={[
+    "A conflict exception is thrown — two commands in the same group cannot share a subsystem",
+    "The second command's end() runs, then the third command's initialize() runs normally",
+    "The third command is skipped because the subsystem is still owned by the group",
+    "Both commands run simultaneously inside the group"
+  ]}
+  correct={1}
+  explanation="Within a SequentialCommandGroup, commands run one at a time. When the second command finishes (isFinished() → true), its end() runs, it releases the subsystem, and then the third command's initialize() runs. There is no conflict because they never overlap. Conflicts only arise when two commands from *outside* the same group try to run simultaneously against the same subsystem."
+/>
+
+## What's next
+
+You now have the complete command-based framework: subsystems own hardware, commands describe actions with a clean lifecycle, and the scheduler orchestrates everything. The next lessons will put these together with feedback control — you'll implement a PID controller that uses encoder feedback to drive a mechanism to a precise position, and learn how WPILib's `PIDController` and `ProfiledPIDController` make this composable with the command system.

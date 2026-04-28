@@ -1,0 +1,303 @@
+---
+track: control-systems
+lesson: 5
+title: "Tuning PID"
+prereqs: [control-systems-04]
+objectives:
+  - Apply a systematic P-first tuning procedure to a PID controller
+  - Diagnose common PID symptoms (oscillation, sluggishness, windup) and identify the correct fix
+  - Use Shuffleboard or AdvantageScope to visualize setpoint vs. measurement over time
+  - Explain when to add kI and kD versus leaving them at zero
+---
+
+import Key from '../../../components/Key.astro';
+import Try from '../../../components/Try.astro';
+import Note from '../../../components/Note.astro';
+import Warn from '../../../components/Warn.astro';
+import CodeTrace from '../../../components/demos/CodeTrace.jsx';
+import Quiz from '../../../components/demos/Quiz.jsx';
+import CodeEditor from '../../../components/demos/CodeEditor.jsx';
+
+## Hook
+
+You've wired up a PID controller on your elevator. You picked kP=0.1, kI=0.0, kD=0.0 as a guess. You command it to 30 inches and it slowly crawls upward... then overshoots to 34... then drops back to 28... then creeps to 31... and sits there, still 1 inch short of target, vibrating slightly.
+
+You increase kP to 0.3. Now it flies to 35 inches and oscillates wildly. You decrease to 0.05. It gets within 2 inches and stops.
+
+Sound familiar? PID tuning without a method feels like turning random knobs. This lesson gives you a systematic process, a symptom-to-fix table, and the tools to see what's actually happening.
+
+## Core concept
+
+<Key>
+Tune one term at a time, starting with P only. Increase kP until oscillation begins, then back off. Add kD to dampen oscillation if needed. Add kI last, and only if steady-state error is unacceptable and cannot be addressed by feedforward. Use a visualization tool (Shuffleboard, AdvantageScope) to watch setpoint vs. measurement plots rather than guessing from robot behavior.
+</Key>
+
+### The systematic tuning procedure
+
+#### Step 1: Start with all gains at zero
+
+```java
+PIDController pid = new PIDController(0.0, 0.0, 0.0);
+```
+
+This is your baseline. The mechanism should not move (zero output). Confirm your sensor is reading correctly before changing anything.
+
+#### Step 2: Tune kP alone
+
+Increase kP from zero in steps. After each change, command the mechanism from a consistent starting state to the target setpoint and observe:
+
+- Does it move toward the setpoint? Good — keep increasing.
+- Does it overshoot and come back? Reduce kP slightly or proceed to kD.
+- Does it oscillate continuously? You've passed the critical gain. Halve kP.
+
+A rough doubling schedule works well: try 0.01, 0.02, 0.04, 0.08, 0.16... Stop when you see continuous oscillation, then cut in half.
+
+The ideal kP-only response has the mechanism reaching the setpoint with one small overshoot and then settling. Some steady-state error is expected and acceptable at this stage.
+
+#### Step 3: Add kD to dampen overshoot (if needed)
+
+If the mechanism rings (oscillates multiple times before settling), add kD:
+
+```java
+pid = new PIDController(kP, 0.0, kD);
+```
+
+Start kD small (typically kD is about 10-100x smaller than kP in normalized systems, but this varies enormously by mechanism). Increase kD until:
+- The overshoot is eliminated or greatly reduced
+- The mechanism settles in one smooth motion
+
+If increasing kD causes high-frequency vibration (motor buzzing), the D term is amplifying sensor noise. Stop there and accept the overshoot, or filter your sensor.
+
+<Note>
+Many FRC mechanisms don't need kD at all. Flywheels (high inertia, velocity control) are often well-behaved with just P. Elevators with significant inertia benefit from kD to prevent overshoot. Arms may or may not need it depending on weight and speed.
+</Note>
+
+#### Step 4: Add kI only if steady-state error is unacceptable
+
+If the mechanism consistently stops short of the setpoint by a fixed amount and P + D alone can't fix it without oscillating:
+
+```java
+pid = new PIDController(kP, kI, kD);
+pid.setIZone(iZone); // always set this when using kI
+```
+
+Start kI very small — typically 10-100x smaller than kP. The I term acts slowly; wait at least 2-3 seconds at a constant setpoint to see its effect. Increase kI until the steady-state error is eliminated without introducing oscillation.
+
+Always set iZone to roughly 2-3x your acceptable steady-state error. This prevents windup during large setpoint changes.
+
+<Warn>
+Resist the urge to add kI immediately. In many FRC systems, steady-state error is better addressed by feedforward (covered in the next lesson) than by the I term. Feedforward is faster-acting and doesn't carry windup risk. Use kI only after you've considered feedforward.
+</Warn>
+
+### Symptom-to-fix table
+
+This is the most-used reference during competition day tuning:
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Oscillates continuously around setpoint | kP too high | Reduce kP by 30-50% |
+| Overshoots once and rings several times | kP too high, or insufficient kD | Reduce kP, or increase kD |
+| Slow to reach setpoint, no overshoot | kP too low | Increase kP |
+| Gets close but stops short (steady-state error) | Insufficient P, or needs I/FF | Increase kP, or add kI / feedforward |
+| Initial lurch then smooth motion | D term causing derivative kick | Check that WPILib derivative-on-measurement is active; ensure no setpoint pre-filtering needed |
+| High-frequency vibration/buzzing | kD too high, amplifying sensor noise | Reduce kD; filter sensor |
+| Correct response during test, overshoot in match | Integrator windup from pre-match disabled state | Call reset() on enable; tighten iZone |
+| Works going up, overshoots going down (arm/elevator) | Asymmetric load (gravity) — P doesn't account for direction | Add kG feedforward term (covered in lesson 6) |
+
+### Using visualization tools
+
+Tuning by feel is unreliable. Always plot setpoint vs. measurement vs. time:
+
+**Shuffleboard (simple, built into WPILib):**
+
+```java
+// In robotInit() or subsystem constructor:
+SmartDashboard.putNumber("Arm/Target", 0);
+SmartDashboard.putNumber("Arm/Measurement", 0);
+
+// In periodic():
+SmartDashboard.putNumber("Arm/Target", targetDegrees);
+SmartDashboard.putNumber("Arm/Measurement", encoder.getPosition());
+```
+
+Add these as a line graph widget in Shuffleboard. You can see exactly when the mechanism overshoots, how fast it responds, and whether it has steady-state error.
+
+**AdvantageScope (recommended for serious tuning):**
+
+AdvantageScope reads WPILib DataLog files or connects live. Log your data with:
+
+```java
+// In robotInit():
+DataLogManager.start();
+DoubleLogEntry targetLog = new DoubleLogEntry(DataLogManager.getLog(), "/arm/target");
+DoubleLogEntry measureLog = new DoubleLogEntry(DataLogManager.getLog(), "/arm/measurement");
+
+// In periodic():
+targetLog.append(targetDegrees);
+measureLog.append(encoder.getPosition());
+```
+
+After a test run, open the .wpilog file in AdvantageScope and plot both signals on the same axis. You'll see:
+- **Rise time**: how long to get from start to setpoint
+- **Overshoot**: how far past setpoint the mechanism went
+- **Settling time**: how long until the mechanism stays within tolerance
+- **Steady-state error**: the gap that remains after settling
+
+Reading these four characteristics tells you exactly which term to adjust.
+
+### Interpreting common response shapes
+
+**Response shape 1 — Underdamped (oscillating):**
+```
+ Measurement
+ ^
+ |        /\   /\
+ |       /  \_/  \_____setpoint____
+ |      /
+ |_____/
+       +-----> time
+```
+Overshoots and rings. Reduce kP or add kD.
+
+**Response shape 2 — Overdamped (sluggish):**
+```
+ Measurement
+ ^
+ |                          /----setpoint
+ |                  _______/
+ |          _______/
+ |_________/
+       +-----> time
+```
+Slowly creeps up, never overshoots, may not reach setpoint. Increase kP.
+
+**Response shape 3 — Critically damped (ideal):**
+```
+ Measurement
+ ^
+ |          /¯¯¯¯setpoint¯¯¯¯
+ |         /
+ |        /
+ |_______/
+       +-----> time
+```
+Reaches setpoint quickly with no overshoot. This is the target.
+
+**Response shape 4 — Steady-state error:**
+```
+ Measurement
+ ^
+ |         /¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯
+ |        /                     setpoint ---
+ |_______/
+       +-----> time
+```
+Reaches a plateau below setpoint. Add kI or feedforward.
+
+### Tuning under competition constraints
+
+At a competition you often have 10-15 minutes in the pit and limited access to the robot. Prioritize:
+
+1. **Get P working first** — a robot that gets close is better than one that doesn't move.
+2. **Don't add I unless absolutely necessary** — it takes time to see the effect and can introduce new problems.
+3. **Use NetworkTables to tune live** — publish kP, kI, kD as SmartDashboard entries and read them back in code so you can change gains without redeploying.
+
+```java
+// Live-tunable PID (competition pit trick):
+private void updateGainsFromDashboard() {
+    double newKP = SmartDashboard.getNumber("PID/kP", 0.0);
+    double newKI = SmartDashboard.getNumber("PID/kI", 0.0);
+    double newKD = SmartDashboard.getNumber("PID/kD", 0.0);
+    if (newKP != pid.getP() || newKI != pid.getI() || newKD != pid.getD()) {
+        pid.setPID(newKP, newKI, newKD);
+    }
+}
+```
+
+## Key takeaways
+
+- Tune P first, then D if needed, then I only as a last resort.
+- The doubling procedure: 0.01 → 0.02 → 0.04... until oscillation, then halve.
+- Every symptom maps to a specific fix: oscillation → less P or more D; steady-state error → more P or add I/FF; buzzing → less D.
+- Always visualize setpoint vs. measurement over time. Never tune by sound or feel alone.
+- At competition: tune live with NetworkTables; fix P first; don't add I unless you have time to observe and revert.
+- Always call `reset()` when re-enabling a subsystem to clear stale integrator values.
+
+## Common confusions
+
+**"I get different behavior each time I test, even with the same gains."**
+
+Inconsistent starting conditions cause this. Always start from the same position and velocity (e.g., arm at 0 degrees, at rest) before each tuning run. If the mechanism is hot/cold or a battery is different, results will vary — note these conditions.
+
+**"I reduced kP and now the mechanism is slower but still oscillates."**
+
+If oscillation persists at a very low kP, suspect mechanical backlash or a loose encoder coupling. Oscillation at low gains usually indicates the sensor is reporting something other than the actual mechanism position. Check your sensor mounting and coupling.
+
+**"The tuning that works in the shop doesn't work at competition."**
+
+Common causes: different battery charge (affects motor output per unit command), different ambient temperature (motor resistance changes), different game piece weight (load changes effective inertia), or a different floor surface (for drive systems). Competition tuning should account for worst-case battery (charged to 12.6V nominal).
+
+**"My elevator works great going up but oscillates going down."**
+
+Gravity assists the downward motion, making the effective gain higher going down than up. You may need asymmetric gains (different kP per direction) or a gravity feedforward term (covered in lesson 6) to account for the constant gravitational load.
+
+## Challenge
+
+<Try>
+A PID controller is running on a drivetrain wheel velocity loop. Based on the descriptions below, identify the symptom, the most likely cause, and the single best fix for each scenario.
+
+Scenario A: The wheel reaches 2000 RPM (target) but keeps oscillating between 1800 and 2200 RPM indefinitely. kP=0.002, kI=0.0, kD=0.0.
+
+Scenario B: The wheel slowly climbs to 1920 RPM and stops. It never reaches the 2000 RPM target. kP=0.0005, kI=0.0, kD=0.0.
+
+Scenario C: The wheel reaches 2000 RPM perfectly during testing, but in the first match it overshoots to 2600 RPM before settling. kP=0.001, kI=0.0002, kD=0.001.
+</Try>
+
+<CodeEditor
+  client:load
+  starterCode={`public class PIDDiagnosis {
+    public static void main(String[] args) {
+        // For each scenario, print:
+        // "Scenario X: symptom=[...], cause=[...], fix=[...]"
+
+        // Scenario A: oscillates between 1800-2200 RPM, kP=0.002, kI=0, kD=0
+        // Hint: what does continuous oscillation around setpoint indicate?
+        System.out.println("Scenario A: symptom=continuous oscillation, cause=kP too high, fix=reduce kP");
+
+        // Scenario B: stops at 1920, never reaches 2000 RPM, kP=0.0005, kI=0, kD=0
+        // Hint: what is it called when the controller stops short permanently?
+        String causeB = ""; // fill in
+        String fixB = "";   // fill in
+        System.out.println("Scenario B: symptom=steady-state error 80 RPM short, cause=" + causeB + ", fix=" + fixB);
+
+        // Scenario C: works in testing, overshoots badly in match, kP=0.001, kI=0.0002, kD=0.001
+        // Hint: the robot was disabled for 5 minutes before the match. What builds up in kI systems?
+        String causeC = ""; // fill in
+        String fixC = "";   // fill in
+        System.out.println("Scenario C: symptom=overshoot in match only, cause=" + causeC + ", fix=" + fixC);
+    }
+}`}
+  testCases={[
+    { label: "Scenario A correctly identifies kP too high", expected: "Scenario A: symptom=continuous oscillation, cause=kP too high, fix=reduce kP" },
+    { label: "Scenario B identifies steady-state error", expected: "symptom=steady-state error 80 RPM short" },
+    { label: "Scenario C identifies integrator windup", expected: "cause=integrator windup" }
+  ]}
+  hint="B: steady-state error is caused by kP being too low to overcome friction — fix with higher kP or add kI/feedforward. C: the integrator builds up during the disabled period before the match — fix with reset() on enable and setIZone()."
+/>
+
+<Quiz
+  client:load
+  question="During a test, your arm PID works perfectly in the shop. At competition, you notice it always overshoots on the first move of each match. Between testing and the match, the robot was disabled for 8 minutes with the arm held away from its starting position by a technician. What is the most likely cause and fix?"
+  options={[
+    "kP is too high — reduce it by half",
+    "The I term accumulated error during the 8-minute disabled period (integrator windup) — call reset() on enable and add setIZone()",
+    "The D term caused derivative kick on the first move — switch to derivative on measurement",
+    "Battery voltage was lower in the match — enable voltage compensation"
+  ]}
+  correct={1}
+  explanation="With the arm away from its starting position for 8 minutes while the controller was (incorrectly) allowed to accumulate, the integrator built up a large value. On first enable, this large I term commanded excessive output, causing overshoot. Fix: always call pid.reset() in the subsystem's onEnable() or autonomousInit()/teleopInit(), and use setIZone() to prevent accumulation during large errors."
+/>
+
+## What's next
+
+Even a perfectly tuned PID controller is reactive — it waits for error to appear and then corrects it. But for a flywheel or drivetrain, we can calculate ahead of time exactly how much voltage is needed to achieve a given velocity, based on the physics of the motor. This predictive term is called feedforward, and it does the heavy lifting so the PID only has to handle small residual corrections. Feedforward is the single biggest improvement most FRC teams can make to their shooter and drivetrain control.

@@ -1,0 +1,377 @@
+---
+track: control-systems
+lesson: 15
+title: Kalman Filters
+prereqs: [control-systems-14]
+objectives:
+  - Explain why noisy sensor readings harm control performance and why averaging alone is insufficient
+  - Describe the predict step and update step of the Kalman filter cycle and what each one contributes
+  - Interpret the Q matrix (process noise) and R matrix (measurement noise) and explain how their ratio affects filter behavior
+  - Set up a KalmanFilter in WPILib for a flywheel or drivetrain velocity system
+  - Describe one practical FRC use case where a Kalman filter improves control performance
+---
+
+import Key from '../../../components/Key.astro';
+import Try from '../../../components/Try.astro';
+import Note from '../../../components/Note.astro';
+import Warn from '../../../components/Warn.astro';
+import CodeTrace from '../../../components/demos/CodeTrace.jsx';
+import Quiz from '../../../components/demos/Quiz.jsx';
+import CodeEditor from '../../../components/demos/CodeEditor.jsx';
+
+## Hook
+
+Your flywheel PID oscillates at 100 RPM around the target. You examine the velocity signal and see it's jumping ±80 RPM every loop even when the wheel is spinning smoothly — that's just encoder noise. Your PID is responding to noise it thinks is real error. You could reduce kP to stop reacting to noise, but then you'd also respond more slowly to actual velocity changes after a ball is shot. A Kalman filter lets you have both: a smooth, low-noise velocity estimate AND fast response to genuine disturbances — because it distinguishes between the two using your model of the mechanism.
+
+## Core concept
+
+<Key>
+A Kalman filter is an optimal linear estimator that fuses a mathematical model of the system (predict step) with noisy sensor measurements (update step) to produce the best possible estimate of the true state. It continuously balances trust between the model and the sensors based on how noisy each one is.
+</Key>
+
+## Why simple averaging is not enough
+
+A simple moving average smooths noise but introduces **lag** — the estimate always trails the true value by half the window length. For a flywheel spinning down after a ball is loaded, a 10-sample moving average reports a velocity that is 100 ms behind reality. Your PID applies the wrong correction.
+
+What we actually need is a filter that:
+1. Uses the physical model to predict where the state should be right now.
+2. Corrects that prediction using the sensor measurement — but only by an amount proportional to how much we trust the sensor.
+
+This is exactly what the Kalman filter does.
+
+## The two-step cycle
+
+Every loop, the Kalman filter performs two operations:
+
+### Step 1: Predict
+
+"Given where I was last loop and what input I applied, where should I be now?"
+
+The filter uses the state-space model (`x[k+1] = A_d * x[k] + B_d * u[k]`) to propagate the state estimate forward:
+
+```
+x_hat_predicted = A_d * x_hat + B_d * u
+P_predicted = A_d * P * A_d' + Q
+```
+
+- `x_hat` — current state estimate
+- `P` — covariance matrix (uncertainty in the state estimate)
+- `Q` — process noise covariance (how much we expect the model to be wrong)
+- `A_d'` — transpose of A_d
+
+After prediction, the estimate has moved forward but the uncertainty has grown (P increased by Q), because we know the model is imperfect.
+
+### Step 2: Update (Correct)
+
+"Given what my sensor actually measured, how should I correct my prediction?"
+
+The filter computes a **Kalman gain** K that represents how much to trust the measurement vs. the prediction:
+
+```
+K = P_predicted * C' / (C * P_predicted * C' + R)
+x_hat = x_hat_predicted + K * (measurement - C * x_hat_predicted)
+P = (I - K * C) * P_predicted
+```
+
+- `R` — measurement noise covariance (how noisy the sensor is)
+- `C * x_hat_predicted` — what the sensor should read if the prediction is perfect
+- `measurement - C * x_hat_predicted` — the **innovation**: difference between what we saw and what we predicted
+- `K` — Kalman gain: how much of the innovation we incorporate
+
+If R is large (sensor is noisy), K is small — we trust the model more.
+If Q is large (model is unreliable), K is large — we trust the sensor more.
+
+After the update step, the uncertainty P decreases (the measurement gave us information).
+
+## Visualizing the two-step cycle
+
+```
+Time k-1         Time k                 Time k (after measurement)
+---------        --------               ----------------------
+x_hat            x_hat_predicted   -->  x_hat (corrected)
+(known)          (from model A,B)        (blended: model + sensor)
+                 uncertainty grows       uncertainty shrinks
+```
+
+Over many iterations, the filter converges to an estimate that is more accurate than either the model or the sensor alone.
+
+## The Q and R matrices
+
+### Q — Process noise covariance
+
+Q captures how much you expect the state to deviate from what the model predicts. Sources of process noise:
+
+- Unmodeled disturbances (ball loading on a flywheel, bumps on the drive)
+- Model approximations (true friction is nonlinear, but we model it as linear)
+- Actuator quantization
+
+Large Q = "my model is unreliable — trust measurements more."
+Small Q = "my model is accurate — don't let noisy measurements move the estimate much."
+
+In WPILib, Q is typically specified as a diagonal matrix where each diagonal element is the **variance** of the corresponding state. If you expect angular velocity to wander by ±2 rad/s due to disturbances, set Q[0][0] = (2.0)^2 = 4.0 for that state.
+
+### R — Measurement noise covariance
+
+R captures how noisy your sensors are. For a single encoder:
+
+```
+R = [[sigma_encoder^2]]
+```
+
+where `sigma_encoder` is the standard deviation of the encoder velocity reading.
+
+Large R = "sensor is very noisy — don't trust measurements much."
+Small R = "sensor is clean — trust measurements, pull estimate toward them."
+
+### Choosing Q and R in practice
+
+The absolute values of Q and R matter less than their **ratio**. A common starting approach:
+
+1. Set R based on measured sensor noise. Log your encoder velocity at a fixed mechanical speed for several seconds. Compute the standard deviation. Set R = variance = std^2.
+2. Set Q based on how much the model drifts. Start with Q = 1/100 of R (trust the model 100x more than the sensor). Observe the filtered output.
+3. If the filter lags real disturbances → increase Q.
+4. If the filter is still too noisy → decrease Q (increase R confidence ratio).
+
+<Note>
+WPILib's KalmanFilter constructor takes standard deviation arrays (not variance matrices directly) for Q and R. It constructs the diagonal covariance matrices from those values internally. This simplifies setup significantly.
+</Note>
+
+## KalmanFilter in WPILib
+
+```java
+import edu.wpi.first.math.estimator.KalmanFilter;
+import edu.wpi.first.math.system.LinearSystem;
+import edu.wpi.first.math.system.plant.LinearSystemId;
+import edu.wpi.first.math.numbers.*;
+
+// Build the plant model from SysId constants
+// identifyVelocitySystem: 1 state (velocity), 1 input (voltage), 1 output (velocity)
+LinearSystem<N1, N1, N1> flywheelPlant = LinearSystemId.identifyVelocitySystem(kV, kA);
+
+// Create Kalman filter
+// Type params: <States, Inputs, Outputs>
+// modelStdDevs: how much we trust the model (process noise Q)
+// measurementStdDevs: how much we trust the encoder (measurement noise R)
+KalmanFilter<N1, N1, N1> observer = new KalmanFilter<>(
+    Nat.N1(), Nat.N1(),
+    flywheelPlant,
+    VecBuilder.fill(3.0),    // model std dev: 3 rad/s process noise
+    VecBuilder.fill(0.01),   // encoder std dev: 0.01 rad/s (clean encoder)
+    0.020                    // dt: 20 ms loop period
+);
+```
+
+### Using the filter in periodic()
+
+```java
+// Each loop iteration:
+observer.predict(VecBuilder.fill(appliedVoltage), 0.020);
+
+// After reading the encoder:
+observer.correct(VecBuilder.fill(appliedVoltage),
+                 VecBuilder.fill(encoder.getVelocity()));
+
+// Read the filtered state estimate:
+double filteredVelocity = observer.getXhat(0);  // state index 0 = velocity
+```
+
+Always call `predict()` first (uses the model), then `correct()` (incorporates the sensor), every single loop.
+
+## Complete flywheel with Kalman filter
+
+```java
+public class ShooterSubsystem extends SubsystemBase {
+    private final CANSparkMax motor = new CANSparkMax(5, MotorType.kBrushless);
+    private final RelativeEncoder encoder = motor.getEncoder();
+
+    private static final double kV = 0.038;  // V*s/rad
+    private static final double kA = 0.002;  // V*s^2/rad
+
+    private final LinearSystem<N1, N1, N1> plant =
+        LinearSystemId.identifyVelocitySystem(kV, kA);
+
+    private final KalmanFilter<N1, N1, N1> observer = new KalmanFilter<>(
+        Nat.N1(), Nat.N1(), plant,
+        VecBuilder.fill(3.0),   // process noise std dev (rad/s)
+        VecBuilder.fill(0.01),  // encoder noise std dev (rad/s)
+        0.020
+    );
+
+    private final SimpleMotorFeedforward ff = new SimpleMotorFeedforward(0.095, kV, kA);
+    private final PIDController pid = new PIDController(0.05, 0, 0);
+
+    private double targetRadPerSec = 0.0;
+    private double lastVoltage = 0.0;
+
+    public void setTargetRadPerSec(double radPerSec) {
+        targetRadPerSec = radPerSec;
+    }
+
+    public double getFilteredVelocity() {
+        return observer.getXhat(0);
+    }
+
+    public boolean atTarget() {
+        return Math.abs(getFilteredVelocity() - targetRadPerSec) < 5.0;
+    }
+
+    @Override
+    public void periodic() {
+        double rawVelocity = encoder.getVelocity() * (2 * Math.PI / 60.0); // RPM to rad/s
+
+        // Kalman filter cycle
+        observer.predict(VecBuilder.fill(lastVoltage), 0.020);
+        observer.correct(VecBuilder.fill(lastVoltage), VecBuilder.fill(rawVelocity));
+
+        double filtered = getFilteredVelocity();
+
+        // Control with filtered velocity
+        double ffVolts  = ff.calculate(targetRadPerSec);
+        double pidVolts = pid.calculate(filtered, targetRadPerSec);
+        double voltage  = MathUtil.clamp(ffVolts + pidVolts, -12.0, 12.0);
+
+        motor.setVoltage(voltage);
+        lastVoltage = voltage;  // store for next predict() call
+    }
+}
+```
+
+<Warn>
+Pass the actual applied voltage (after clamping) to predict() and correct(), not the commanded voltage before clamping. If the motor voltage was clamped to 12 V but you tell the filter it applied 15 V, the filter's internal model diverges from reality and the estimate drifts.
+</Warn>
+
+## Kalman filter for encoder + gyro fusion (odometry)
+
+A common FRC use case is fusing wheel encoder odometry (drifts over time) with a gyro (accurate for heading but not position):
+
+```java
+// WPILib DifferentialDrivePoseEstimator internally uses an Extended Kalman Filter
+DifferentialDrivePoseEstimator poseEstimator = new DifferentialDrivePoseEstimator(
+    kinematics,
+    gyro.getRotation2d(),
+    leftEncoder.getPosition(),
+    rightEncoder.getPosition(),
+    startingPose,
+    VecBuilder.fill(0.02, 0.02, 0.01),  // encoder/model std devs: x(m), y(m), heading(rad)
+    VecBuilder.fill(0.1, 0.1, 0.01)     // vision measurement std devs (when vision available)
+);
+
+// Each loop:
+poseEstimator.update(gyro.getRotation2d(), leftEncoder.getPosition(), rightEncoder.getPosition());
+
+// When vision data arrives (asynchronously):
+poseEstimator.addVisionMeasurement(visionPose, visionTimestamp);
+```
+
+The filter produces a pose estimate smoother and more accurate than either encoder odometry or vision alone.
+
+## Interpreting filter behavior
+
+| Symptom | Likely cause | Fix |
+|---------|-------------|-----|
+| Estimate lags real velocity | Q too small (model trusted too much) | Increase Q std dev |
+| Estimate is still noisy | R too small (sensor trusted too much) | Increase R std dev |
+| Estimate diverges slowly over time | Wrong kV/kA in plant model | Re-run SysId to correct model |
+| Filter is "stiff" — barely moves toward sensor | Q much smaller than R | Raise Q or lower R relative to each other |
+| Large spike in estimate after ball loads | Expected — disturbance is real, Q > 0 allows filter to track it | This is correct behavior |
+
+## Key takeaways
+
+- The Kalman filter runs a two-step cycle every loop: **predict** (advance state using model) then **update** (correct using sensor measurement).
+- Q (process noise covariance) encodes how much you trust your model. R (measurement noise covariance) encodes how much you trust your sensor.
+- When R >> Q, the filter trusts the model and smooths out sensor noise. When Q >> R, the filter tracks the sensor closely and responds quickly to disturbances.
+- WPILib `KalmanFilter` takes standard deviation values for model and sensor noise, builds matrices internally, and provides `predict()/correct()/getXhat()` APIs.
+- Always pass the actual applied voltage (post-clamp) to `predict()` to keep the model consistent with what really happened.
+- WPILib's `DifferentialDrivePoseEstimator` and `SwerveDrivePoseEstimator` use Kalman-based estimators internally to fuse encoders, gyro, and vision.
+
+## Common confusions
+
+**"How do I know the right Q and R values?"** Measure R from your actual encoder: log velocity at known speed, compute variance. Start Q as a small fraction of R (model is usually more trustworthy than a noisy encoder). Tune by watching the filtered output vs. raw sensor — the filter should remove jitter without adding significant lag.
+
+**"Do I need to call predict() even when I don't have a new sensor reading?"** Yes. Call predict() every loop (20 ms), even if your sensor only updates at 10 ms or asynchronously. The model-only prediction keeps the estimate moving forward in time. Call correct() only when a new measurement arrives.
+
+**"My filtered velocity drifts upward even with no voltage."** Your plant model is wrong — specifically, the A matrix may have the wrong sign or magnitude. Check that kV and kA were correctly measured (via SysId) and that velocity units are consistent between the model and the encoder reading.
+
+**"What's the difference between a Kalman filter and a low-pass filter?"** A low-pass filter (like a moving average or exponential filter) only uses past sensor measurements — it knows nothing about the physical system. A Kalman filter uses the system model to predict the expected state, then uses the sensor to correct the prediction. The model prediction allows the Kalman filter to track real dynamics (like a velocity change) much faster than a purely reactive filter.
+
+## Challenge
+
+<Try>
+Simulate a simplified one-dimensional Kalman filter for a flywheel over 4 steps. The flywheel is at steady state (model predicts no change), but the encoder is noisy.
+
+Simplified update rule (scalar Kalman, no prediction drift):
+  K = P / (P + R)
+  x_hat = x_hat + K * (measurement - x_hat)
+  P = (1 - K) * P
+
+Parameters:
+  R = 100.0  (encoder variance — standard deviation of 10 rad/s)
+  Q = 1.0    (process noise — small, model is trustworthy)
+  Initial x_hat = 500.0 rad/s
+  Initial P = 50.0 (initial uncertainty)
+
+Measurements: [520.0, 490.0, 510.0, 505.0] rad/s
+
+After each step: predict (P = P + Q), then update with measurement.
+Print K, x_hat, and P rounded to 2 decimal places.
+</Try>
+
+<CodeEditor
+  client:load
+  starterCode={`public class Main {
+    public static void main(String[] args) {
+        double R = 100.0;   // measurement noise variance
+        double Q = 1.0;     // process noise variance
+
+        double xHat = 500.0;  // initial estimate (rad/s)
+        double P    = 50.0;   // initial uncertainty
+
+        double[] measurements = {520.0, 490.0, 510.0, 505.0};
+
+        System.out.println("step=0 xHat=" + xHat + " P=" + P);
+
+        for (int k = 0; k < measurements.length; k++) {
+            // Predict: uncertainty grows by process noise
+            P = P + Q;
+
+            // Compute Kalman gain
+            double K = P / (P + R);
+
+            // Update estimate with measurement
+            double innovation = measurements[k] - xHat;
+            xHat = xHat + K * innovation;
+
+            // Update uncertainty
+            P = (1 - K) * P;
+
+            // Round for display
+            K    = Math.round(K    * 100.0) / 100.0;
+            xHat = Math.round(xHat * 100.0) / 100.0;
+            P    = Math.round(P    * 100.0) / 100.0;
+
+            System.out.println("step=" + (k+1) + " K=" + K + " xHat=" + xHat + " P=" + P);
+        }
+    }
+}`}
+  testCases={[
+    { label: "4-step scalar Kalman filter simulation", expected: "step=0 xHat=500.0 P=50.0\nstep=1 K=0.34 xHat=506.8 P=33.0\nstep=2 K=0.25 xHat=498.6 P=25.25\nstep=3 K=0.2 xHat=500.9 P=20.97\nstep=4 K=0.17 xHat=501.65 P=18.14" }
+  ]}
+  hint="Each step: (1) P = P + Q (predict — uncertainty grows). (2) K = P / (P + R) (Kalman gain). (3) xHat = xHat + K * (measurement - xHat) (update estimate). (4) P = (1 - K) * P (reduce uncertainty). Notice K decreases over time as the filter becomes more confident."
+/>
+
+<Quiz
+  client:load
+  question="Your KalmanFilter estimate tracks the raw encoder signal almost exactly with no smoothing. What does this indicate about your Q and R settings?"
+  options={[
+    "Q is much smaller than R — the filter trusts the model heavily and ignores the sensor",
+    "Q is much larger than R — the filter trusts the sensor heavily and the model provides little correction",
+    "Q and R are equal — the filter perfectly balances model and sensor",
+    "The filter is working correctly — Kalman filters always track the raw sensor exactly"
+  ]}
+  correct={1}
+  explanation="When Q >> R, the Kalman gain K approaches 1.0, and the estimate update is dominated by the innovation (measurement - prediction). In the limit, the filter tracks the raw sensor exactly. To add smoothing, reduce Q relative to R so the filter trusts the model more and dampens noisy sensor readings."
+/>
+
+## What's next
+
+You have now completed the control systems track. The concepts here — feedforward, PID, profiled motion, system identification, state-space modeling, and Kalman filtering — are the complete toolkit for controlling FRC mechanisms from simple intakes to complex multi-axis systems. The next step is applying these tools to full robot subsystems with cascaded control loops and sensor fusion in autonomous routines.

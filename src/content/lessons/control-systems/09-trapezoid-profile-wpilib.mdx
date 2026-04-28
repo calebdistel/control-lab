@@ -1,0 +1,319 @@
+---
+track: control-systems
+lesson: 9
+title: TrapezoidProfile in WPILib
+prereqs: [control-systems-08]
+objectives:
+  - Construct a TrapezoidProfile.Constraints object with a max velocity and max acceleration
+  - Describe what a TrapezoidProfile.State represents and how position and velocity relate over time
+  - Call TrapezoidProfile.calculate() inside a periodic loop and use the returned state to drive a motor
+  - Explain how ProfiledPIDController combines motion profiling and PID feedback in a single class
+  - Apply ProfiledPIDController to an elevator or arm subsystem to achieve smooth, safe setpoint changes
+---
+
+import Key from '../../../components/Key.astro';
+import Try from '../../../components/Try.astro';
+import Note from '../../../components/Note.astro';
+import Warn from '../../../components/Warn.astro';
+import CodeTrace from '../../../components/demos/CodeTrace.jsx';
+import Quiz from '../../../components/demos/Quiz.jsx';
+import CodeEditor from '../../../components/demos/CodeEditor.jsx';
+
+## Hook
+
+Your elevator slams to its setpoint — the carriage jerks, the chain skips a tooth, and everyone winces. The PID was tuned fine. The problem was you commanded a step change in position and the robot tried to get there instantly. Trapezoid motion profiles fix this by limiting how fast the mechanism can accelerate and how fast it travels — giving you smooth, predictable movement without overshoot or mechanical stress.
+
+## Core concept
+
+<Key>
+A trapezoid motion profile defines a velocity-vs-time curve shaped like a trapezoid: the mechanism ramps up to a maximum velocity, cruises at that velocity, then ramps back down to zero at the goal position. WPILib's TrapezoidProfile class generates this curve for you given constraints on maximum velocity and maximum acceleration.
+</Key>
+
+## TrapezoidProfile.Constraints
+
+`TrapezoidProfile.Constraints` is a simple data container that holds two values:
+
+- `maxVelocity` — the fastest the mechanism is allowed to travel (meters per second, degrees per second, etc.)
+- `maxAcceleration` — the fastest the velocity is allowed to change (units per second squared)
+
+```java
+// Elevator: max 1.5 m/s, accelerate at 3.0 m/s^2
+TrapezoidProfile.Constraints constraints =
+    new TrapezoidProfile.Constraints(1.5, 3.0);
+```
+
+Both values use whatever physical units you choose — just be consistent. If your encoder returns meters, use meters per second. If it returns degrees, use degrees per second.
+
+## TrapezoidProfile.State
+
+A `TrapezoidProfile.State` holds two fields:
+
+| Field | Meaning |
+|-------|---------|
+| `position` | Where the mechanism is (or should be) right now |
+| `velocity` | How fast it is moving (or should be moving) right now |
+
+States appear in pairs:
+
+- **Current state** — where the mechanism is at the start of the profile (usually current sensor reading + current velocity)
+- **Goal state** — where the mechanism should end up (target position, velocity usually 0)
+
+```java
+TrapezoidProfile.State current = new TrapezoidProfile.State(0.0, 0.0);  // at 0 m, stopped
+TrapezoidProfile.State goal    = new TrapezoidProfile.State(1.2, 0.0);  // go to 1.2 m, stop there
+```
+
+## How calculate() works
+
+`TrapezoidProfile` is not stateful on its own — you call `calculate(dt, current, goal)` each loop and it returns the profiled state for this timestep.
+
+```java
+TrapezoidProfile profile = new TrapezoidProfile(constraints);
+
+// In periodic (runs every 20 ms)
+TrapezoidProfile.State setpoint = profile.calculate(0.020, currentState, goalState);
+
+// setpoint.position is the position the mechanism should be at RIGHT NOW
+// setpoint.velocity is the velocity the mechanism should have RIGHT NOW
+```
+
+The returned `setpoint` becomes the reference for your PID controller and feedforward. On the next loop iteration, you pass this returned state as the new `current` state so the profile continues smoothly.
+
+<Note>
+WPILib also provides a time-based `calculate(t)` API on an older version of TrapezoidProfile. The three-argument `calculate(dt, current, goal)` is the modern approach — it handles re-profiling correctly if the goal changes mid-move.
+</Note>
+
+## Feeding the profile into a PID + feedforward
+
+The typical pattern for a profiled subsystem:
+
+```java
+// --- Class fields ---
+TrapezoidProfile.Constraints constraints = new TrapezoidProfile.Constraints(1.5, 3.0);
+TrapezoidProfile profile = new TrapezoidProfile(constraints);
+TrapezoidProfile.State setpoint = new TrapezoidProfile.State(); // starts at 0, 0
+ElevatorFeedforward ff = new ElevatorFeedforward(kS, kG, kV, kA);
+PIDController pid = new PIDController(kP, 0, 0);
+
+// --- In periodic ---
+public void periodic() {
+    TrapezoidProfile.State goal = new TrapezoidProfile.State(targetMeters, 0.0);
+    setpoint = profile.calculate(0.020, setpoint, goal);
+
+    double ffVolts  = ff.calculate(setpoint.velocity);
+    double pidVolts = pid.calculate(encoder.getPosition(), setpoint.position);
+
+    motor.setVoltage(ffVolts + pidVolts);
+}
+```
+
+The feedforward drives the expected trajectory. The PID corrects small deviations caused by gravity, friction, or disturbances.
+
+## ProfiledPIDController — profiling and PID in one class
+
+WPILib bundles `TrapezoidProfile` + `PIDController` into `ProfiledPIDController`. It manages the setpoint state internally.
+
+```java
+ProfiledPIDController controller = new ProfiledPIDController(
+    kP, kI, kD,
+    new TrapezoidProfile.Constraints(1.5, 3.0)
+);
+
+// Set a new goal whenever you need to move
+controller.setGoal(new TrapezoidProfile.State(1.2, 0.0));
+
+// In periodic — call calculate() with the current sensor position
+double output = controller.calculate(encoder.getPosition());
+
+// Read the internal profiled setpoint if you need it for feedforward
+TrapezoidProfile.State sp = controller.getSetpoint();
+double ffVolts = ff.calculate(sp.velocity);
+
+motor.setVoltage(output + ffVolts);
+```
+
+`ProfiledPIDController.calculate()` returns only the PID correction relative to the profiled setpoint — you still add feedforward on top.
+
+<Note>
+`ProfiledPIDController` also has `calculate(measurement, newGoal)` — a convenience overload that updates the goal and runs the controller in one line. Useful when a new operator command arrives.
+</Note>
+
+## Applying this to an elevator
+
+A complete elevator subsystem sketch:
+
+```java
+public class ElevatorSubsystem extends SubsystemBase {
+    private final CANSparkMax motor = new CANSparkMax(1, MotorType.kBrushless);
+    private final RelativeEncoder encoder = motor.getEncoder();
+
+    // kS=0.1, kG=0.45, kV=2.8, kA=0.05
+    private final ElevatorFeedforward ff = new ElevatorFeedforward(0.1, 0.45, 2.8, 0.05);
+
+    private final ProfiledPIDController controller = new ProfiledPIDController(
+        5.0, 0, 0,
+        new TrapezoidProfile.Constraints(1.5, 3.0)
+    );
+
+    public ElevatorSubsystem() {
+        // Convert encoder to meters: sprocket radius 0.04 m, 42:1 gearbox
+        double rotationsToMeters = (2 * Math.PI * 0.04) / 42.0;
+        encoder.setPositionConversionFactor(rotationsToMeters);
+        encoder.setVelocityConversionFactor(rotationsToMeters / 60.0);
+        controller.setTolerance(0.01); // 1 cm tolerance
+    }
+
+    public void setHeight(double meters) {
+        controller.setGoal(new TrapezoidProfile.State(meters, 0.0));
+    }
+
+    @Override
+    public void periodic() {
+        double measurement = encoder.getPosition();
+        double pidOut = controller.calculate(measurement);
+        TrapezoidProfile.State sp = controller.getSetpoint();
+        double ffOut = ff.calculate(sp.velocity);
+        motor.setVoltage(pidOut + ffOut);
+    }
+}
+```
+
+## Applying this to an arm
+
+Arms use `ArmFeedforward` instead of `ElevatorFeedforward`, and angles in radians:
+
+```java
+private final ArmFeedforward ff = new ArmFeedforward(kS, kG, kV, kA);
+private final ProfiledPIDController controller = new ProfiledPIDController(
+    2.0, 0, 0,
+    new TrapezoidProfile.Constraints(
+        Math.PI,       // max velocity: pi rad/s (half rotation per second)
+        2 * Math.PI    // max accel: two pi rad/s^2
+    )
+);
+
+// In periodic
+double angleRad = absoluteEncoder.getRadians();
+double pidOut = controller.calculate(angleRad);
+TrapezoidProfile.State sp = controller.getSetpoint();
+// ArmFeedforward.calculate needs position (for gravity cos term) AND velocity
+double ffOut = ff.calculate(sp.position, sp.velocity);
+motor.setVoltage(pidOut + ffOut);
+```
+
+<Warn>
+ArmFeedforward.calculate() takes both position (angle in radians) AND velocity, because the gravity term depends on cos(angle). ElevatorFeedforward only needs velocity — gravity is constant there. Mixing them up is a common bug.
+</Warn>
+
+## Visualizing the trapezoid
+
+```
+Velocity
+  ^
+  |     ___________
+  |    /           \
+  |   /             \
+  |  /               \
+  | /                 \
+  +---------------------> Time
+  0   t1       t2    t3
+
+  t0..t1 = acceleration phase  (ramp up)
+  t1..t2 = cruise phase        (constant max velocity)
+  t2..t3 = deceleration phase  (ramp down to 0)
+```
+
+If the distance is short enough that the mechanism would overshoot max velocity before it needs to decelerate, WPILib creates a triangular profile (no cruise phase) automatically.
+
+## Key takeaways
+
+- `TrapezoidProfile.Constraints` sets the speed limit and the acceleration limit for a mechanism.
+- `TrapezoidProfile.State` carries position + velocity together — both are needed to fully describe motion.
+- Call `calculate(dt, currentState, goal)` every loop; use the returned state as the PID reference and feedforward input.
+- `ProfiledPIDController` wraps TrapezoidProfile + PIDController into one class; add feedforward separately using `getSetpoint()`.
+- For arms, pass `(sp.position, sp.velocity)` to `ArmFeedforward.calculate()`; for elevators, pass only `sp.velocity`.
+
+## Common confusions
+
+**"Why do I still need PID if I have a profile?"** The profile generates the desired trajectory. PID corrects the gap between where the mechanism actually is versus where the profile says it should be. Without PID, any disturbance (friction, extra weight) accumulates as error. Without the profile, PID produces jerky, potentially damaging motion.
+
+**"My elevator overshoots even with a profile."** The profile itself won't overshoot, but if `kP` is too high the PID correction overshoots the profiled setpoint. Reduce `kP`, or increase feedforward accuracy so the PID has less work to do.
+
+**"Do I need to reset the controller when changing goals?"** `ProfiledPIDController` handles re-profiling automatically — you can call `setGoal()` at any time and it will generate a new profile from the current setpoint state. You only need `reset()` when the mechanism is teleported (e.g., after zeroing the encoder).
+
+**"What units should I use?"** Anything consistent. Meters and seconds is common for elevators. Radians and seconds for arms. Avoid mixing RPM with seconds unless you convert explicitly.
+
+## Challenge
+
+<Try>
+A trapezoid profile has constraints of maxVelocity = 2.0 m/s and maxAcceleration = 4.0 m/s^2. The mechanism starts at position 0.0 m with velocity 0.0 m/s and the goal is 2.0 m at velocity 0.0 m/s.
+
+Compute the profiled setpoint state (position and velocity) at t = 0.0 s, t = 0.25 s, t = 0.5 s, and t = 1.0 s.
+
+Hint: the acceleration phase ends when velocity reaches maxVelocity. Time to reach maxVelocity = maxVelocity / maxAcceleration. Position during acceleration = 0.5 * a * t^2. After that, cruise at maxVelocity. Print each state as "t=X pos=Y vel=Z".
+</Try>
+
+<CodeEditor
+  client:load
+  starterCode={`public class Main {
+    public static void main(String[] args) {
+        double maxVel   = 2.0;  // m/s
+        double maxAccel = 4.0;  // m/s^2
+        // start: pos=0, vel=0  goal: pos=2.0, vel=0
+
+        // Time to reach max velocity
+        double tAccel = maxVel / maxAccel;  // 0.5 s
+
+        // Distance covered during acceleration
+        double dAccel = 0.5 * maxAccel * tAccel * tAccel;  // 0.25 m
+
+        // Evaluate at specific times
+        // t = 0.0 s (still at rest)
+        double t0 = 0.0;
+        double pos0 = 0.0;
+        double vel0 = 0.0;
+        System.out.println("t=" + t0 + " pos=" + pos0 + " vel=" + vel0);
+
+        // t = 0.25 s (mid-acceleration)
+        double t1 = 0.25;
+        double vel1 = maxAccel * t1;              // still accelerating
+        double pos1 = 0.5 * maxAccel * t1 * t1;
+        System.out.println("t=" + t1 + " pos=" + pos1 + " vel=" + vel1);
+
+        // t = 0.5 s (just reached max velocity)
+        double t2 = 0.5;
+        double vel2 = maxVel;
+        double pos2 = dAccel;
+        System.out.println("t=" + t2 + " pos=" + pos2 + " vel=" + vel2);
+
+        // t = 1.0 s — figure out which phase we are in
+        double t3 = 1.0;
+        // After accel phase (t=0.5), we cruise. How far into cruise?
+        double tCruise = t3 - tAccel;
+        double vel3 = maxVel;
+        double pos3 = dAccel + maxVel * tCruise;
+        System.out.println("t=" + t3 + " pos=" + pos3 + " vel=" + vel3);
+    }
+}`}
+  testCases={[
+    { label: "Profile states at t=0.0, 0.25, 0.5, 1.0 s", expected: "t=0.0 pos=0.0 vel=0.0\nt=0.25 pos=0.125 vel=1.0\nt=0.5 pos=0.5 vel=2.0\nt=1.0 pos=1.5 vel=2.0" }
+  ]}
+  hint="During the acceleration phase (t < tAccel): vel = maxAccel * t, pos = 0.5 * maxAccel * t^2. During cruise phase (t >= tAccel): vel = maxVel, pos = dAccel + maxVel * (t - tAccel)."
+/>
+
+<Quiz
+  client:load
+  question="You call ProfiledPIDController.calculate(measurement) in periodic(). What does the return value represent?"
+  options={[
+    "The full motor voltage including feedforward",
+    "The PID correction term relative to the internal profiled setpoint",
+    "The profiled setpoint position for this timestep",
+    "The raw encoder measurement passed in"
+  ]}
+  correct={1}
+  explanation="ProfiledPIDController.calculate() returns only the PID correction (kP * error + kI * integral + kD * derivative) computed against the profiled setpoint. You must add feedforward separately using getSetpoint().velocity (and getSetpoint().position for arms)."
+/>
+
+## What's next
+
+Next you will apply everything in this lesson to a real flywheel velocity controller — a mechanism where the goal is not position but a sustained rotational speed, and where feedforward carries almost all the control effort.

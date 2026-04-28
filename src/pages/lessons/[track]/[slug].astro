@@ -7,11 +7,8 @@ export async function getStaticPaths() {
     'frc-intro',
     'fundamentals',
     'robot-code',
-    'motion-control',
-    'sensing-vision',
-    'autonomy',
-    'swerve',
-    'tooling',
+    'control-systems',
+    'software-engineering',
   ];
 
   const allRaw = await getCollection('lessons', ({ data }) => !data.draft);

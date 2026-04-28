@@ -1,0 +1,397 @@
+---
+track: robot-code
+lesson: 5
+title: Subsystems
+prereqs: [robot-code-03, robot-code-04]
+objectives:
+  - Explain what a subsystem is and why hardware encapsulation prevents bugs
+  - Extend SubsystemBase and correctly implement periodic() for telemetry
+  - Describe how the CommandScheduler auto-registers subsystems and when periodic() runs
+  - Explain resource ownership — why only one command can require a subsystem at a time
+  - Assign a default command to a subsystem and predict when it will run
+---
+
+import Key from '../../../components/Key.astro';
+import Try from '../../../components/Try.astro';
+import Note from '../../../components/Note.astro';
+import Warn from '../../../components/Warn.astro';
+import CodeTrace from '../../../components/demos/CodeTrace.jsx';
+import Quiz from '../../../components/demos/Quiz.jsx';
+import CodeEditor from '../../../components/demos/CodeEditor.jsx';
+
+## Hook
+
+You've got motors, encoders, and solenoids — but they're scattered across `Robot.java` and `RobotContainer` as disconnected fields. Then a second developer starts adding an auto routine. They call `motor.set()` from their own code at the same time yours does. Both set calls conflict. The motor jitters. Nobody knows which command "won."
+
+This is the problem subsystems solve. A subsystem bundles related hardware into a single object with a clear API, and the scheduler guarantees that only one command can use that hardware at a time. Understanding subsystems is the key to writing robot code that scales beyond a single developer and a single mechanism.
+
+## Core concept
+
+<Key>
+A subsystem is a Java class that extends `SubsystemBase`. It owns all hardware for one robot mechanism — motors, sensors, solenoids — and exposes those through public methods. The CommandScheduler calls its `periodic()` method every 20 ms and enforces that at most one command requires it at any given time.
+</Key>
+
+## What a subsystem encapsulates
+
+Think of a subsystem as the contract between your hardware and the rest of the code. Anything outside the subsystem calls its public methods. Nothing outside the subsystem touches hardware objects directly.
+
+**A subsystem owns:**
+- Motor controller objects (`CANSparkMax`, `WPI_TalonSRX`, `TalonFX`)
+- Sensor objects (`DutyCycleEncoder`, `Encoder`, `DigitalInput`, `AnalogInput`)
+- Actuator objects (`Solenoid`, `DoubleSolenoid`)
+- State variables that track mechanism status
+
+**A subsystem exposes:**
+- Action methods (`setSpeed()`, `extend()`, `retract()`)
+- State getters (`getAngleDegrees()`, `isAtLimit()`, `isExtended()`)
+- Telemetry (via `periodic()` → SmartDashboard)
+
+**A subsystem does NOT:**
+- Create command objects
+- Read joystick input directly
+- Call another subsystem's methods (subsystems are peers, not hierarchical)
+
+## Extending `SubsystemBase`
+
+`SubsystemBase` is in the `edu.wpi.first.wpilibj2.command` package. It does two things in its constructor:
+1. Registers the subsystem with the `CommandScheduler` singleton.
+2. Sets up the `periodic()` callback.
+
+```java
+import edu.wpi.first.wpilibj2.command.SubsystemBase;
+
+public class ElevatorSubsystem extends SubsystemBase {
+    // SubsystemBase constructor runs first — registration happens automatically
+}
+```
+
+You do not need to call `CommandScheduler.getInstance().registerSubsystem(this)` manually. Extending `SubsystemBase` and calling `super()` (implicit in Java) is sufficient.
+
+<Note>
+If you forget to extend `SubsystemBase` and use plain `Object` or a custom base class, `periodic()` will never be called and commands cannot require the subsystem. The compiler won't warn you — it's a runtime-only omission.
+</Note>
+
+## The `periodic()` method
+
+`periodic()` is called by the `CommandScheduler` once every robot loop iteration — every 20 ms by default (50 Hz). It runs regardless of which mode the robot is in (teleop, auto, disabled) as long as `CommandScheduler.getInstance().run()` is called in `Robot.java`'s `robotPeriodic()`.
+
+Use `periodic()` for:
+- Publishing sensor data to SmartDashboard or NetworkTables
+- Computing derived state (e.g., filtering a velocity reading)
+- Logging fault codes from motor controllers
+
+Do **not** use `periodic()` for:
+- Running control loops (that belongs in the command, or in a dedicated control method called by a command)
+- Checking command state or cancelling commands
+
+```java
+@Override
+public void periodic() {
+    // Telemetry — always update, regardless of what commands are running
+    SmartDashboard.putNumber("Elevator/heightInches", getHeightInches());
+    SmartDashboard.putNumber("Elevator/velocityIPS",  getVelocityIPS());
+    SmartDashboard.putBoolean("Elevator/atBottom",    isAtBottom());
+    SmartDashboard.putNumber("Elevator/currentAmps",  motor.getOutputCurrent());
+}
+```
+
+## Resource ownership and the CommandScheduler
+
+This is the central rule of the command-based framework: **a subsystem can only be required by one command at a time.**
+
+When a command calls `addRequirements(subsystem)`, it is asserting: "I need exclusive access to this subsystem's hardware." If another command is already using that subsystem, the scheduler cancels the incumbent command and starts the new one.
+
+Why is this safe? Because the subsystem's hardware methods are the only way to interact with it. If command A is the only one that can call `motor.set()`, the motor never gets two conflicting instructions simultaneously.
+
+```
+Command A (requires Elevator) is running
+         ↓
+New Command B (also requires Elevator) is scheduled
+         ↓
+CommandScheduler cancels Command A (calls end(true))
+         ↓
+CommandScheduler starts Command B (calls initialize())
+```
+
+This is automatic. You don't need to check for conflicts in your code.
+
+## Default commands
+
+A **default command** is what a subsystem does when no other command is requiring it. The most common use is drivetrain teleop control: "when no autonomous command is running, let the driver control the robot."
+
+```java
+// In RobotContainer:
+driveSubsystem.setDefaultCommand(
+    new RunCommand(
+        () -> driveSubsystem.tankDrive(
+            -controller.getLeftY(),
+            -controller.getRightY()
+        ),
+        driveSubsystem
+    )
+);
+```
+
+Default command rules:
+- The default command is automatically scheduled whenever the subsystem becomes free (i.e., no other command requires it).
+- The default command is automatically cancelled when a new command requires the subsystem.
+- The default command must require the subsystem, or the scheduler won't know when to run it.
+- A default command's `isFinished()` should return `false` — it's meant to run continuously.
+
+<Warn>
+If you set a default command that does not require the subsystem, it will run forever, in parallel with all other commands, with no scheduler management. Always pass the subsystem as a requirement.
+</Warn>
+
+## Complete DriveSubsystem skeleton
+
+```java
+import com.ctre.phoenix.motorcontrol.NeutralMode;
+import com.ctre.phoenix.motorcontrol.StatorCurrentLimitConfiguration;
+import com.ctre.phoenix.motorcontrol.can.WPI_TalonSRX;
+import com.ctre.phoenix.motorcontrol.can.WPI_VictorSPX;
+import edu.wpi.first.wpilibj.Encoder;
+import edu.wpi.first.wpilibj.smartdashboard.SmartDashboard;
+import edu.wpi.first.wpilibj2.command.SubsystemBase;
+
+public class DriveSubsystem extends SubsystemBase {
+
+    // --- Hardware ---
+    private final WPI_TalonSRX  leftLeader    = new WPI_TalonSRX(1);
+    private final WPI_VictorSPX leftFollower  = new WPI_VictorSPX(2);
+    private final WPI_TalonSRX  rightLeader   = new WPI_TalonSRX(3);
+    private final WPI_VictorSPX rightFollower = new WPI_VictorSPX(4);
+
+    private final Encoder leftEncoder  = new Encoder(0, 1);
+    private final Encoder rightEncoder = new Encoder(2, 3, true); // reversed
+
+    // --- Constants ---
+    private static final double WHEEL_DIAMETER_INCHES = 6.0;
+    private static final double TICKS_PER_REV         = 2048.0;
+    private static final double GEAR_RATIO            = 10.71;
+    private static final double DISTANCE_PER_PULSE    =
+        (Math.PI * WHEEL_DIAMETER_INCHES) / (TICKS_PER_REV * GEAR_RATIO);
+
+    public DriveSubsystem() {
+        // Inversion — right side physically reversed
+        rightLeader.setInverted(true);
+        rightFollower.setInverted(true);
+
+        // Followers
+        leftFollower.follow(leftLeader);
+        rightFollower.follow(rightLeader);
+
+        // Neutral mode
+        leftLeader.setNeutralMode(NeutralMode.Brake);
+        leftFollower.setNeutralMode(NeutralMode.Brake);
+        rightLeader.setNeutralMode(NeutralMode.Brake);
+        rightFollower.setNeutralMode(NeutralMode.Brake);
+
+        // Current limits
+        StatorCurrentLimitConfiguration limit =
+            new StatorCurrentLimitConfiguration(true, 38, 55, 0.1);
+        leftLeader.configStatorCurrentLimit(limit);
+        rightLeader.configStatorCurrentLimit(limit);
+
+        // Encoder distance per pulse
+        leftEncoder.setDistancePerPulse(DISTANCE_PER_PULSE);
+        rightEncoder.setDistancePerPulse(DISTANCE_PER_PULSE);
+    }
+
+    // --- Public API for Commands ---
+
+    /** Drive with independent left and right outputs in [-1, 1] */
+    public void tankDrive(double leftSpeed, double rightSpeed) {
+        leftLeader.set(leftSpeed);
+        rightLeader.set(rightSpeed);
+    }
+
+    /** Drive with arcade-style inputs */
+    public void arcadeDrive(double forward, double turn) {
+        tankDrive(forward + turn, forward - turn);
+    }
+
+    /** Distance traveled by the left side in inches since last reset */
+    public double getLeftDistanceInches() {
+        return leftEncoder.getDistance();
+    }
+
+    /** Distance traveled by the right side in inches since last reset */
+    public double getRightDistanceInches() {
+        return rightEncoder.getDistance();
+    }
+
+    /** Average of left and right encoder distances — straight-line distance */
+    public double getAverageDistanceInches() {
+        return (getLeftDistanceInches() + getRightDistanceInches()) / 2.0;
+    }
+
+    /** Reset both encoders to zero */
+    public void resetEncoders() {
+        leftEncoder.reset();
+        rightEncoder.reset();
+    }
+
+    // --- SubsystemBase override ---
+
+    @Override
+    public void periodic() {
+        SmartDashboard.putNumber("Drive/LeftInches",    getLeftDistanceInches());
+        SmartDashboard.putNumber("Drive/RightInches",   getRightDistanceInches());
+        SmartDashboard.putNumber("Drive/AvgInches",     getAverageDistanceInches());
+        SmartDashboard.putNumber("Drive/LeftAmps",      leftLeader.getStatorCurrent());
+        SmartDashboard.putNumber("Drive/RightAmps",     rightLeader.getStatorCurrent());
+    }
+}
+```
+
+## Who owns what? A design exercise
+
+Imagine a robot with these mechanisms: a drivetrain, a rotating arm, a claw on the end of the arm, and a camera that tracks game pieces.
+
+| Hardware | Subsystem | Reason |
+|---|---|---|
+| 4 drive motors + 2 encoders | `DriveSubsystem` | All directly control locomotion |
+| Arm motor + absolute encoder + limit switch | `ArmSubsystem` | All describe arm state/control |
+| Claw solenoid | `ClawSubsystem` or `ArmSubsystem` | Depends: if the claw always moves with the arm, co-locate. If commands can control them independently, separate. |
+| Limelight camera | `VisionSubsystem` | Reads a network stream — no output actuators. Separate because commands might use it independently of drive. |
+
+The key question is: **can I imagine two simultaneous commands needing independent control of these hardware items?** If yes, they belong in separate subsystems.
+
+<CodeTrace
+  client:load
+  variables={{ armCmd: "none", driveCmd: "TeleopDrive (default)", freeSubsystems: "Arm, Drive" }}
+  steps={[
+    { code: "Robot boot, RobotContainer()",
+      state: { armCmd: "none", driveCmd: "none", freeSubsystems: "Arm, Drive" },
+      comment: "subsystems created, no commands yet" },
+    { code: "setDefaultCommand(TeleopDrive) on DriveSubsystem",
+      state: { armCmd: "none", driveCmd: "TeleopDrive (default)", freeSubsystems: "Arm" },
+      comment: "TeleopDrive requires Drive → auto-scheduled" },
+    { code: "Button A pressed → ArmToAngle(arm, 45°) scheduled",
+      state: { armCmd: "ArmToAngle(45°)", driveCmd: "TeleopDrive", freeSubsystems: "none" },
+      comment: "both subsystems now owned" },
+    { code: "ArmToAngle.isFinished() returns true",
+      state: { armCmd: "none", driveCmd: "TeleopDrive", freeSubsystems: "Arm" },
+      comment: "arm command finishes — Arm subsystem free again" },
+    { code: "Auto command DriveDistance(60in) scheduled",
+      state: { armCmd: "none", driveCmd: "DriveDistance(60in)", freeSubsystems: "Arm" },
+      comment: "DriveDistance interrupts TeleopDrive (requires same Drive subsystem)" },
+    { code: "DriveDistance completes",
+      state: { armCmd: "none", driveCmd: "TeleopDrive (default)", freeSubsystems: "Arm" },
+      comment: "Drive free → default command TeleopDrive resumes automatically" },
+  ]}
+/>
+
+## Key takeaways
+
+- A subsystem extends `SubsystemBase` and owns all hardware for one mechanism.
+- `SubsystemBase`'s constructor auto-registers the subsystem with the `CommandScheduler`.
+- `periodic()` runs every 20 ms in all robot modes. Use it for telemetry and state tracking, not control loops.
+- The scheduler enforces that at most one command requires a subsystem at a time.
+- Default commands run whenever the subsystem is unowned — use them for operator control modes.
+
+## Common confusions
+
+**"My subsystem's `periodic()` runs but the SmartDashboard values never update."** `periodic()` runs, but you need `CommandScheduler.getInstance().run()` to be called every loop. Verify `Robot.java`'s `robotPeriodic()` contains exactly that call.
+
+**"Two subsystems need to share a motor."** They shouldn't. One subsystem owns the motor. If a second mechanism depends on the same motor's state, it reads from the owning subsystem's getters. If two separate mechanisms truly share a physical motor (rare), consider whether they're actually one mechanism.
+
+**"My default command doesn't resume after an autonomous command finishes."** The default command only auto-schedules if it requires the subsystem. Confirm `addRequirements(driveSubsystem)` is called in its constructor (or that you're using `RunCommand` with the subsystem as the second argument, which calls `addRequirements` for you).
+
+**"I want `periodic()` to run a PID calculation."** This is tempting but wrong architecture. PID belongs in the command, or in a `calculate()` method on the subsystem called by the command's `execute()`. The subsystem shouldn't decide on its own what control output to produce — that's the command's responsibility.
+
+## Challenge
+
+<Try>
+Reason through resource ownership. Given the descriptions below, decide which subsystem should own each piece of hardware and explain why. Then write a minimal Java skeleton that correctly assigns them.
+</Try>
+
+<CodeEditor
+  client:load
+  starterCode={`/**
+ * Robot mechanisms:
+ *   - Left and right drive motors (CAN IDs 1, 2, 3, 4)
+ *   - Drive encoders (DIO 0/1 left, DIO 2/3 right)
+ *   - Shooter flywheel motor (CAN ID 10)
+ *   - Shooter hood servo (PWM port 0) — adjusts launch angle
+ *   - Shooter encoder (DIO 4/5) — measures flywheel RPM
+ *   - Indexer motor (CAN ID 11) — feeds balls to shooter
+ *   - Beam break sensor (DIO 6) — detects ball in indexer
+ *
+ * Task: Create two subsystem skeletons — ShooterSubsystem and IndexerSubsystem.
+ * Each should declare (but not configure) the right hardware fields.
+ * Print the subsystem name in each constructor.
+ * Print each hardware item's name and ID when it's "created".
+ *
+ * Note: We simulate hardware creation with System.out.println — no imports needed.
+ */
+public class SubsystemOwnership {
+
+    static class ShooterSubsystem {
+        // TODO: declare fields for flywheel motor, hood servo, and shooter encoder
+        // Simulate hardware creation in the constructor with System.out.println
+
+        ShooterSubsystem() {
+            System.out.println("ShooterSubsystem created");
+            // TODO: print each hardware item
+        }
+    }
+
+    static class IndexerSubsystem {
+        // TODO: declare fields for indexer motor and beam break sensor
+        // Simulate hardware creation in the constructor with System.out.println
+
+        IndexerSubsystem() {
+            System.out.println("IndexerSubsystem created");
+            // TODO: print each hardware item
+        }
+    }
+
+    public static void main(String[] args) {
+        ShooterSubsystem shooter = new ShooterSubsystem();
+        IndexerSubsystem indexer = new IndexerSubsystem();
+        System.out.println("Both subsystems ready");
+    }
+}`}
+  testCases={[
+    { label: "ShooterSubsystem created",        expected: "ShooterSubsystem created" },
+    { label: "Flywheel motor declared",          expected: "Flywheel motor CAN ID 10" },
+    { label: "Hood servo declared",              expected: "Hood servo PWM 0" },
+    { label: "Shooter encoder declared",         expected: "Shooter encoder DIO 4/5" },
+    { label: "IndexerSubsystem created",         expected: "IndexerSubsystem created" },
+    { label: "Indexer motor declared",           expected: "Indexer motor CAN ID 11" },
+    { label: "Beam break sensor declared",       expected: "Beam break sensor DIO 6" },
+    { label: "Both subsystems ready",            expected: "Both subsystems ready" },
+  ]}
+  hint='In each constructor, add System.out.println() calls for each hardware item. Use the exact strings from the testCases: "Flywheel motor CAN ID 10", "Hood servo PWM 0", "Shooter encoder DIO 4/5", "Indexer motor CAN ID 11", "Beam break sensor DIO 6".'
+/>
+
+<Quiz
+  client:load
+  question="A subsystem's periodic() is not running even though the robot is enabled. What is the most likely cause?"
+  options={[
+    "periodic() only runs during teleop, not autonomous",
+    "CommandScheduler.getInstance().run() is not called in robotPeriodic()",
+    "No command is currently requiring the subsystem",
+    "The subsystem's constructor was not called"
+  ]}
+  correct={1}
+  explanation="periodic() is triggered by CommandScheduler.getInstance().run(), which must be called every loop in Robot.java's robotPeriodic(). If that call is missing or moved, no subsystem periodic() calls happen, regardless of mode or whether commands are running."
+/>
+
+<Quiz
+  client:load
+  question="You set a default command on DriveSubsystem. An autonomous DriveDistance command finishes. What happens next?"
+  options={[
+    "Nothing — the drive subsystem sits idle until a new command is scheduled",
+    "The default command is automatically rescheduled by the CommandScheduler",
+    "You must manually call schedule() on the default command in autonomousExit()",
+    "The last running command's end() method schedules the default command"
+  ]}
+  correct={1}
+  explanation="When a subsystem becomes free (its current command ends), the CommandScheduler automatically schedules the subsystem's default command. This is the entire point of default commands — they fill the idle gap so the subsystem is never truly uncontrolled."
+/>
+
+## What's next
+
+In **Robot Code Lesson 06** we'll complete the picture by going deep on Commands — the other half of the command-based framework. You'll learn the full lifecycle (`initialize`, `execute`, `end`, `isFinished`), how to compose commands into sequences and parallel groups, and how built-in factory commands like `RunCommand` and `InstantCommand` let you skip writing full classes for simple actions.

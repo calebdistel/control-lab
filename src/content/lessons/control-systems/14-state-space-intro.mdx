@@ -1,0 +1,313 @@
+---
+track: control-systems
+lesson: 14
+title: State Space Introduction
+prereqs: [control-systems-05]
+objectives:
+  - Identify the limitations of SISO PID that motivate state-space modeling
+  - Define a state vector and give an example for a flywheel and for an elevator
+  - Write the state-space equations x_dot = Ax + Bu and y = Cx in words, identifying what each matrix does
+  - Describe the intuition behind the A, B, and C matrices without performing matrix algebra
+  - Explain how WPILib's LinearSystem class represents a state-space model and where it is used
+---
+
+import Key from '../../../components/Key.astro';
+import Try from '../../../components/Try.astro';
+import Note from '../../../components/Note.astro';
+import Warn from '../../../components/Warn.astro';
+import CodeTrace from '../../../components/demos/CodeTrace.jsx';
+import Quiz from '../../../components/demos/Quiz.jsx';
+import CodeEditor from '../../../components/demos/CodeEditor.jsx';
+
+## Hook
+
+Your turret has two motors — one rotates it in azimuth, one controls a hood angle for elevation. The two axes are physically coupled: when the turret spins fast, centripetal forces slightly push the hood. Your PID loop on the hood doesn't know about the turret — it sees a mysteriously drifting error it can't fully explain, and windup accumulates. Two separate PID controllers fighting a shared physical system is the heart of the problem. State-space control gives you a single mathematical framework that can model both axes, their coupling, and their combined dynamics in one coherent description.
+
+## Core concept
+
+<Key>
+State-space control describes a mechanism as a vector of state variables — all the quantities needed to fully describe the system's current condition. The equations x_dot = Ax + Bu (state evolution) and y = Cx (measurement output) fully capture how those states change over time in response to inputs and how sensors observe them.
+</Key>
+
+## The limits of SISO PID
+
+PID is a SISO controller: one input (error) → one output (motor voltage). This works well when:
+- There is exactly one control input and one measured output.
+- The dynamics are simple enough that a proportional-integral-derivative structure captures them.
+- The mechanism is not coupled to other mechanisms.
+
+PID struggles when:
+- You have multiple inputs or outputs that interact (coupled systems).
+- You need to explicitly account for acceleration (inertia), not just velocity.
+- You want to design the controller based on a physical model rather than manual gain tuning.
+- You need to optimally trade off speed of response vs. actuator effort (LQR).
+- You want to estimate unmeasured states (Kalman filter).
+
+All of the advanced techniques — LQR, Kalman filters, full state feedback — are built on state-space representations.
+
+## What is a state variable?
+
+A **state variable** is a quantity that, together with the current input, completely determines the future evolution of the system. You need the full state to predict what happens next.
+
+### Example: a flywheel
+
+A flywheel's future velocity depends on its current velocity (momentum) and the applied voltage. The state is just one variable:
+
+```
+x = [angular_velocity]     (rad/s)
+u = [voltage]              (V)
+```
+
+Knowing the current velocity and the voltage, you can compute what the velocity will be one millisecond from now.
+
+### Example: an elevator
+
+The elevator's future position depends on both its current position AND its current velocity. If you only know position (e.g., height = 0.8 m) but not velocity, you cannot predict where it will be in 20 ms — it could be moving up, down, or stationary.
+
+```
+x = [position,   velocity]   (m, m/s)
+u = [voltage]                (V)
+```
+
+Both variables are required to fully capture the elevator's condition. This two-element vector is the **state vector**.
+
+### Example: a coupled turret + hood system
+
+```
+x = [turret_angle, turret_velocity, hood_angle, hood_velocity]
+u = [turret_voltage, hood_voltage]
+```
+
+Four states, two inputs. A SISO PID loop treats each pair independently. State-space can model the cross-coupling between them.
+
+## The state-space equations
+
+### State equation
+
+```
+x_dot = A * x + B * u
+```
+
+- `x` — state vector (what the system is right now)
+- `x_dot` — derivative of the state vector (how the state is changing right now)
+- `u` — input vector (what you are commanding, e.g., voltage)
+- `A` — state transition matrix (how the current state drives future changes)
+- `B` — input matrix (how the input drives state changes)
+
+In words: "The rate of change of the system state equals the natural dynamics of the system (A times x) plus the effect of the input we are applying (B times u)."
+
+### Output equation
+
+```
+y = C * x
+```
+
+- `y` — measurement vector (what your sensors actually read)
+- `C` — output matrix (which parts of the state your sensors observe)
+
+In words: "What the sensors see is a linear combination of the true states."
+
+## Intuition for each matrix
+
+### The A matrix — natural dynamics
+
+A captures how the mechanism evolves on its own (with zero input). Consider the elevator:
+
+```
+x = [position, velocity]
+
+x_dot[0] = velocity                  (position changes at the rate of velocity)
+x_dot[1] = -friction/mass * velocity  (friction slows velocity down)
+```
+
+Written as a matrix multiplication:
+
+```
+x_dot = [0,                    1    ] * [position] + B * voltage
+        [0,  -friction/mass        ]   [velocity]
+```
+
+The first row says position's rate of change is equal to velocity (row: 0 * position + 1 * velocity). The second row says velocity's rate of change depends on itself through friction.
+
+The A matrix captures this coupling between position and velocity — information that a single-axis PID loop cannot represent internally.
+
+### The B matrix — effect of input
+
+B captures how the motor voltage translates into state change. For the elevator, voltage affects the acceleration (second derivative of position = first derivative of velocity):
+
+```
+B = [0           ]   (voltage does not directly change position)
+    [1 / mass_eff]   (voltage changes velocity through F=ma with effective mass)
+```
+
+### The C matrix — sensor observation
+
+C maps the true state to what sensors report. If you have both a position encoder and a velocity encoder, you observe the full state:
+
+```
+C = [1, 0]   (first sensor reads position)
+    [0, 1]   (second sensor reads velocity)
+```
+
+If you only have a position encoder (no direct velocity measurement), you observe only position:
+
+```
+C = [1, 0]   (sensor reads position only; velocity is unobserved)
+```
+
+Unobserved states can be estimated by a Kalman filter — but that requires having a state-space model in the first place.
+
+## A concrete flywheel example
+
+A flywheel's angular velocity evolves according to:
+
+```
+angular_acceleration = (1/J) * (motor_torque - friction * angular_velocity)
+```
+
+where J is the moment of inertia and motor_torque = kT * current ≈ (kT / R) * voltage - (kT * kE / R) * angular_velocity
+
+Collecting terms (simplified):
+
+```
+omega_dot = (-kV_normalized) * omega + (kA_normalized) * voltage
+```
+
+In state-space form with x = [omega]:
+
+```
+A = [-kV_normalized]    (1x1 matrix — just a scalar)
+B = [kA_normalized]     (1x1 matrix)
+C = [1]                 (we observe omega directly from encoder)
+```
+
+The negative sign in A means the flywheel naturally decelerates (friction slows it). B means voltage accelerates it. C means we can measure the full state.
+
+## Discrete vs. continuous state-space
+
+The equations above are **continuous** — they use derivatives. Robot code runs in discrete time steps (every 20 ms). WPILib automatically discretizes the continuous model:
+
+```
+x[k+1] = A_d * x[k] + B_d * u[k]
+y[k]   = C * x[k]
+```
+
+where `A_d` and `B_d` are the discretized matrices for a given dt. WPILib's `LinearSystem` stores the continuous-time A and B matrices and handles discretization internally when needed.
+
+## WPILib LinearSystem
+
+`LinearSystem<States, Inputs, Outputs>` is a container for the A, B, C, D matrices:
+
+```java
+// WPILib provides factory methods for common mechanisms:
+LinearSystem<N1, N1, N1> flywheelPlant = LinearSystemId.identifyVelocitySystem(kV, kA);
+
+LinearSystem<N2, N1, N1> elevatorPlant = LinearSystemId.identifyPositionSystem(kV, kA);
+
+// Or build from first principles:
+// A = [[-b/J]], B = [[1/J]], C = [[1]], D = [[0]]
+LinearSystem<N1, N1, N1> customPlant = new LinearSystem<>(
+    MatBuilder.fill(Nat.N1(), Nat.N1(), -kV_norm),   // A
+    MatBuilder.fill(Nat.N1(), Nat.N1(),  kA_norm),   // B
+    MatBuilder.fill(Nat.N1(), Nat.N1(),  1.0),        // C
+    MatBuilder.fill(Nat.N1(), Nat.N1(),  0.0)         // D
+);
+```
+
+The type parameters `N1, N2` are WPILib's compile-time size encoding for matrices — `N1` means size 1, `N2` means size 2. This catches dimension mismatches at compile time.
+
+`LinearSystem` is used as input to:
+- `LinearQuadraticRegulator` (LQR) — optimal state feedback
+- `KalmanFilter` — state estimation
+- `LinearSystemLoop` — combines both into a complete control loop
+- `LinearPlantInversionFeedforward` — model-inversion feedforward
+
+## When does state space actually help in FRC?
+
+| Use case | Benefit over PID+FF |
+|----------|-------------------|
+| Flywheel with KalmanFilter | Filtered velocity estimate — smoother, less noise in PID |
+| Drivetrain with full state feedback | Combined heading + velocity control, curvature coupling |
+| Coupled mechanisms (e.g., arm + wrist) | Can model coupling explicitly |
+| Shooter with LQR | Mathematically optimal kP choice given inertia and voltage constraints |
+| Swerve drive odometry | Extended Kalman filter for sensor fusion |
+
+For most single-axis FRC mechanisms (elevator, single arm, flywheel), a well-tuned PID + feedforward works fine and is far simpler to understand. State-space shines when you need estimation (Kalman), optimal gain selection (LQR), or coupled dynamics.
+
+## Key takeaways
+
+- SISO PID works for independent single-axis systems but cannot model coupled dynamics or multiple states simultaneously.
+- A state vector captures all variables needed to predict future behavior — typically position + velocity for motion systems.
+- The state equation `x_dot = Ax + Bu` describes how states evolve; `y = Cx` describes what sensors measure.
+- A models natural dynamics (how the mechanism behaves with zero input), B models input effect, C models sensor observation.
+- WPILib `LinearSystem` stores these matrices and is used as the foundation for LQR and Kalman filter classes.
+- State space is the mathematical prerequisite for Kalman filters, which are the subject of the next lesson.
+
+## Common confusions
+
+**"Does state space replace PID?"** Not necessarily. State space is a modeling framework. You can build PID-equivalent controllers in state space (kP is a special case of full state feedback). The value of state space is enabling more sophisticated controllers and estimators that PID cannot express.
+
+**"I don't understand matrix multiplication — can I still use this?"** Yes. WPILib's `LinearSystemId` factory methods build the matrices for you from SysId constants (kV, kA). You don't need to derive A and B by hand for standard mechanisms. Understanding the intuition (A = dynamics, B = input, C = observation) is enough to use the tools correctly.
+
+**"What is the D matrix?"** D is the direct feedthrough matrix — it models cases where the input immediately affects the output without going through the states. For almost all physical mechanisms in FRC, D = 0 (voltage doesn't instantly change position or velocity). You can safely ignore it.
+
+**"How do I know how many states my system needs?"** As a rule, each independent energy storage element adds one state. A mass stores kinetic energy (needs velocity state). A spring stores potential energy (needs position state). A flywheel stores rotational kinetic energy (needs angular velocity). A rigid arm with gravity has both position and velocity → two states.
+
+## Challenge
+
+<Try>
+A flywheel state-space model has one state (angular velocity in rad/s) and one input (voltage in V). The discrete update equation for dt = 0.020 s is:
+
+  omega[k+1] = 0.94 * omega[k] + 18.5 * voltage[k]
+
+Simulate the flywheel starting at omega = 0 rad/s. Apply a constant voltage of 6.0 V for 5 steps (each step is 20 ms).
+
+Print the angular velocity after each step.
+
+This mimics what the LinearSystem class does internally during simulation.
+</Try>
+
+<CodeEditor
+  client:load
+  starterCode={`public class Main {
+    public static void main(String[] args) {
+        // Discrete state-space model for a flywheel
+        // x[k+1] = A_d * x[k] + B_d * u[k]
+        double A_d = 0.94;   // state transition (decay due to friction)
+        double B_d = 18.5;   // input gain (voltage to velocity)
+
+        double omega = 0.0;  // initial angular velocity (rad/s)
+        double voltage = 6.0; // constant applied voltage (V)
+
+        int steps = 5;
+        System.out.println("step=0 omega=" + Math.round(omega * 100.0) / 100.0);
+
+        for (int k = 1; k <= steps; k++) {
+            omega = A_d * omega + B_d * voltage;
+            double rounded = Math.round(omega * 100.0) / 100.0;
+            System.out.println("step=" + k + " omega=" + rounded);
+        }
+    }
+}`}
+  testCases={[
+    { label: "Flywheel state-space simulation 5 steps at 6 V", expected: "step=0 omega=0.0\nstep=1 omega=111.0\nstep=2 omega=215.34\nstep=3 omega=313.42\nstep=4 omega=405.61\nstep=5 omega=492.27" }
+  ]}
+  hint="Each step: omega_new = 0.94 * omega_old + 18.5 * 6.0. Step 1: 0.94*0 + 18.5*6 = 111.0. Step 2: 0.94*111 + 111 = 215.34. Continue for all 5 steps."
+/>
+
+<Quiz
+  client:load
+  question="In the state-space equation x_dot = Ax + Bu, what does the B matrix represent?"
+  options={[
+    "The natural decay or growth of the states with no input applied",
+    "How sensor measurements relate to the underlying states",
+    "How the control input (e.g., voltage) drives changes in the states",
+    "The friction and inertia properties of the mechanism"
+  ]}
+  correct={2}
+  explanation="B is the input matrix. It describes how the control input u (voltage, force, etc.) drives changes in the state. A models the natural dynamics (what happens with u = 0). C maps states to sensor measurements (y = Cx). B and A together determine the full behavior: the system evolves as x_dot = Ax (natural) + Bu (driven by input)."
+/>
+
+## What's next
+
+The next lesson builds directly on this state-space foundation to introduce Kalman filters — a technique that fuses noisy sensor measurements with a state-space model to produce the best possible estimate of the true system state, even when measurements are imperfect.

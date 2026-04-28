@@ -1,0 +1,379 @@
+---
+track: software-engineering
+lesson: 2
+title: Subsystem Design Patterns
+prereqs: [software-engineering-01]
+objectives:
+  - Define an I/O interface and explain why it decouples control logic from hardware
+  - Identify the anti-pattern of calling motor.set() from RobotContainer and explain why it is dangerous
+  - Implement dependency injection by passing an I/O object into a subsystem constructor
+  - Describe the three goals a well-designed subsystem must achieve
+---
+
+import Key from '../../../components/Key.astro';
+import Try from '../../../components/Try.astro';
+import Note from '../../../components/Note.astro';
+import Warn from '../../../components/Warn.astro';
+import Quiz from '../../../components/demos/Quiz.jsx';
+import CodeEditor from '../../../components/demos/CodeEditor.jsx';
+
+## Hook
+
+Your arm subsystem works perfectly at practice. Two days before competition, you want to run tests on your laptop — but `ArmSubsystem` imports `CANSparkMax`, which imports the REV vendor library, which imports native code that only runs on the roboRIO. Your laptop crashes trying to load it.
+
+So you skip tests. You deploy untested code to the robot. During autonomous, the arm drives past its physical limit, strips a gear, and your team is out of action for three matches while you repair it.
+
+The gear could have been saved by one design decision made in week 2: the I/O abstraction layer.
+
+## Core concept
+
+<Key>
+A Subsystem has three goals: encapsulate hardware behind a safe interface, maintain subsystem state, and expose only the operations that commands need. An I/O layer separates the *what* (control logic) from the *how* (hardware calls), making control logic testable without hardware.
+</Key>
+
+## The three subsystem goals
+
+**Goal 1: Encapsulate hardware.** No code outside the subsystem touches motor controllers, encoders, or sensors. `RobotContainer` never calls `motor.set()`.
+
+**Goal 2: Expose a safe interface.** Public methods represent *intent* — `setArmAngle(degrees)`, not `setMotorVoltage(volts)`. The subsystem enforces limits, clamping, and safety bounds internally.
+
+**Goal 3: Maintain state.** The subsystem tracks current position, velocity, and mode. Commands ask "what is the arm angle?" via `getAngle()` — they never reach into hardware directly.
+
+## Anti-patterns to eliminate
+
+### Anti-pattern 1: Hardware calls from RobotContainer
+
+```java
+// WRONG — RobotContainer reaches into hardware
+public class RobotContainer {
+    private final CANSparkMax armMotor = new CANSparkMax(3, MotorType.kBrushless);
+
+    private void configureBindings() {
+        new JoystickButton(driver, Button.kA.value)
+            .whileTrue(Commands.run(() -> armMotor.set(0.5)));
+    }
+}
+```
+
+Problems: no limit enforcement, no state tracking, not testable, hardware object lives outside a subsystem where the scheduler can't manage it.
+
+### Anti-pattern 2: Control logic in periodic()
+
+```java
+// WRONG — periodic() runs unconditionally, fighting active commands
+@Override
+public void periodic() {
+    if (targetAngle > currentAngle) {
+        motor.set(0.4);
+    } else {
+        motor.set(-0.4);
+    }
+}
+```
+
+`periodic()` runs every loop — even when a command has already set the motor. You'll get undefined behavior as both paths try to own the output.
+
+### Anti-pattern 3: Fat constructors
+
+```java
+// WRONG — subsystem hardcodes its hardware, untestable
+public class ArmSubsystem extends SubsystemBase {
+    private final CANSparkMax motor = new CANSparkMax(3, MotorType.kBrushless);
+    private final RelativeEncoder encoder = motor.getEncoder();
+    // ...
+}
+```
+
+You can never swap this for a simulated version. Every test requires real hardware.
+
+## The I/O abstraction layer
+
+The fix is an interface that describes *what the hardware can do* without specifying *which hardware does it*:
+
+```java
+// ArmIO.java — the contract
+public interface ArmIO {
+    /** Apply voltage to the arm motor, -12V to +12V. */
+    void setVoltage(double volts);
+
+    /** Return arm angle in degrees from horizontal. */
+    double getAngleDegrees();
+
+    /** Return arm velocity in degrees per second. */
+    double getVelocityDegreesPerSec();
+}
+```
+
+Now write two implementations — one real, one simulated:
+
+```java
+// ArmIOSparkMax.java — real hardware
+public class ArmIOSparkMax implements ArmIO {
+    private final CANSparkMax motor = new CANSparkMax(3, MotorType.kBrushless);
+    private final RelativeEncoder encoder = motor.getEncoder();
+
+    public ArmIOSparkMax() {
+        // 360 degrees / gear ratio
+        encoder.setPositionConversionFactor(360.0 / 50.0);
+        encoder.setVelocityConversionFactor(360.0 / 50.0 / 60.0);
+    }
+
+    @Override
+    public void setVoltage(double volts) {
+        motor.setVoltage(volts);
+    }
+
+    @Override
+    public double getAngleDegrees() {
+        return encoder.getPosition();
+    }
+
+    @Override
+    public double getVelocityDegreesPerSec() {
+        return encoder.getVelocity();
+    }
+}
+```
+
+```java
+// ArmIOSim.java — runs on any laptop, no hardware needed
+public class ArmIOSim implements ArmIO {
+    private double angleDegrees = 0.0;
+    private double velocityDegreesPerSec = 0.0;
+    private double appliedVolts = 0.0;
+
+    @Override
+    public void setVoltage(double volts) {
+        appliedVolts = Math.max(-12.0, Math.min(12.0, volts));
+        // Simple linear approximation: 1V ≈ 5 deg/s
+        velocityDegreesPerSec = appliedVolts * 5.0;
+        angleDegrees += velocityDegreesPerSec * 0.02; // 20ms loop
+    }
+
+    @Override
+    public double getAngleDegrees() {
+        return angleDegrees;
+    }
+
+    @Override
+    public double getVelocityDegreesPerSec() {
+        return velocityDegreesPerSec;
+    }
+}
+```
+
+## Dependency injection via constructor
+
+The subsystem accepts an `ArmIO` — it doesn't care which implementation it gets:
+
+```java
+public class ArmSubsystem extends SubsystemBase {
+    private final ArmIO io;
+    private double targetAngleDegrees = 0.0;
+
+    // Dependency injection — pass in the I/O implementation
+    public ArmSubsystem(ArmIO io) {
+        this.io = io;
+    }
+
+    // Safe interface — commands call this, not setVoltage directly
+    public void setTargetAngle(double degrees) {
+        // Enforce physical limits here, not in the command
+        targetAngleDegrees = Math.max(0.0, Math.min(180.0, degrees));
+    }
+
+    public double getAngleDegrees() {
+        return io.getAngleDegrees();
+    }
+
+    public boolean atTarget() {
+        return Math.abs(targetAngleDegrees - io.getAngleDegrees()) < 2.0;
+    }
+
+    @Override
+    public void periodic() {
+        // Telemetry only — not control logic
+        SmartDashboard.putNumber("Arm/angle", io.getAngleDegrees());
+        SmartDashboard.putNumber("Arm/target", targetAngleDegrees);
+    }
+}
+```
+
+Now `RobotContainer` chooses which implementation to inject:
+
+```java
+public class RobotContainer {
+    private final ArmSubsystem arm;
+
+    public RobotContainer() {
+        // On real robot: use ArmIOSparkMax
+        // In simulation: use ArmIOSim
+        if (Robot.isReal()) {
+            arm = new ArmSubsystem(new ArmIOSparkMax());
+        } else {
+            arm = new ArmSubsystem(new ArmIOSim());
+        }
+        configureBindings();
+    }
+}
+```
+
+<Note>
+This pattern comes from AdvantageKit's "IO layer" design. Even if you don't use AdvantageKit, adopting this structure pays dividends in testability and simulator support throughout a build season.
+</Note>
+
+## Where does control logic live?
+
+Control logic (PID, feedforward, state machines) belongs in the Subsystem, not in Commands. Here's the split:
+
+| Belongs in Subsystem | Belongs in Command |
+|---|---|
+| PID math, feedforward | When to start/stop the subsystem |
+| Limit enforcement | Which target angle to pass |
+| State tracking (atTarget, isStowed) | Sequencing across multiple subsystems |
+| Telemetry | Binding to driver input |
+
+The Command's job is to say *what* to do. The Subsystem's job is to figure out *how* to do it safely.
+
+```java
+// ArmToPositionCommand.java — thin command, all logic in subsystem
+public class ArmToPositionCommand extends CommandBase {
+    private final ArmSubsystem arm;
+    private final double targetDegrees;
+
+    public ArmToPositionCommand(ArmSubsystem arm, double targetDegrees) {
+        this.arm = arm;
+        this.targetDegrees = targetDegrees;
+        addRequirements(arm);
+    }
+
+    @Override
+    public void initialize() {
+        arm.setTargetAngle(targetDegrees);  // subsystem enforces limits
+    }
+
+    @Override
+    public boolean isFinished() {
+        return arm.atTarget();  // subsystem knows what "at target" means
+    }
+
+    @Override
+    public void end(boolean interrupted) {
+        if (interrupted) arm.setTargetAngle(arm.getAngleDegrees()); // hold current
+    }
+}
+```
+
+<Warn>
+Never put `Math.max(0, Math.min(180, angle))` in a Command. If you have two commands that both move the arm, you'd need to duplicate that clamping in both. Put limits in the Subsystem once, enforce them always.
+</Warn>
+
+## Key takeaways
+
+- A subsystem's three goals: encapsulate hardware, expose a safe interface, maintain state.
+- Calling `motor.set()` from RobotContainer or Commands bypasses all safety — it's always wrong.
+- The I/O interface separates control logic from hardware. The Subsystem works with the interface; it doesn't know if it's talking to real hardware or a simulation.
+- Dependency injection via constructor lets you swap implementations at startup without changing any subsystem code.
+- Physical limits, clamping, and safety bounds belong in the Subsystem. Commands declare goals; Subsystems enforce constraints.
+- `periodic()` is for telemetry. Control logic belongs in methods called by Commands.
+
+## Common confusions
+
+**"Why not just use Robot.isReal() inside the Subsystem?"** You could — but then your Subsystem has both implementations mixed together, making it harder to read and impossible to test each one in isolation. Separate classes are cleaner.
+
+**"What if my I/O interface gets huge?"** Break it up. An `ArmIO` with 20 methods is a sign the subsystem is doing too much. Consider splitting into multiple subsystems, or grouping methods into a nested `ArmIO.ArmInputs` data object (the AdvantageKit pattern).
+
+**"My command needs to know the motor current — should it call io.getCurrent()?"** No. The Subsystem exposes curent via a method like `getMotorCurrentAmps()`. Commands ask the Subsystem, not the I/O layer.
+
+## Challenge
+
+<Try>
+Design an `IntakeIO` interface and two implementations — `IntakeIOTalon` (real) and `IntakeIOMock` (simulated) — for an intake with a single motor and a beam-break sensor. The mock should track whether the "piece" has been injected via a test method. Then write an `IntakeSubsystem` that accepts an `IntakeIO` and exposes `runIntake()`, `stopIntake()`, and `hasPiece()` methods.
+
+Think about: what goes in the interface vs what goes in the subsystem? Where does the "piece detected for 3 consecutive loops" debounce logic live?
+</Try>
+
+<CodeEditor
+  client:load
+  starterCode={`// Demonstrate the I/O pattern with a mock.
+// IntakeIO defines the hardware contract.
+// IntakeIOMock implements it without real hardware.
+// IntakeSubsystem uses the interface.
+
+interface IntakeIO {
+    void setMotorSpeed(double speed);  // -1.0 to 1.0
+    boolean getPieceSensor();           // true = piece present
+}
+
+class IntakeIOMock implements IntakeIO {
+    private double motorSpeed = 0.0;
+    private boolean piecePresent = false;
+
+    @Override
+    public void setMotorSpeed(double speed) {
+        motorSpeed = Math.max(-1.0, Math.min(1.0, speed));
+    }
+
+    @Override
+    public boolean getPieceSensor() {
+        return piecePresent;
+    }
+
+    // Test-only method to inject a game piece
+    public void injectPiece() {
+        piecePresent = true;
+    }
+
+    public double getMotorSpeed() {
+        return motorSpeed;
+    }
+}
+
+class IntakeSubsystem {
+    private final IntakeIO io;
+    private boolean running = false;
+
+    public IntakeSubsystem(IntakeIO io) {
+        this.io = io;
+    }
+
+    public void runIntake() {
+        running = true;
+        io.setMotorSpeed(0.8);
+    }
+
+    public void stopIntake() {
+        running = false;
+        io.setMotorSpeed(0.0);
+    }
+
+    public boolean hasPiece() {
+        return io.getPieceSensor();
+    }
+
+    public boolean isRunning() {
+        return running;
+    }
+}
+
+public class SubsystemPatternDemo {
+    public static void main(String[] args) {
+        IntakeIOMock mock = new IntakeIOMock();
+        IntakeSubsystem intake = new IntakeSubsystem(mock);
+
+        // TODO: run the intake, print isRunning and motor speed
+        // TODO: inject a piece via the mock, print hasPiece()
+        // TODO: stop the intake, print isRunning and motor speed
+    }
+}`}
+  testCases={[
+    { label: "intake running at 0.8", expected: "Running: true, Speed: 0.8" },
+    { label: "piece detected after inject", expected: "Has piece: true" },
+    { label: "stopped: not running", expected: "Running: false, Speed: 0.0" },
+  ]}
+  hint="Call intake.runIntake(), then print intake.isRunning() and mock.getMotorSpeed(). Call mock.injectPiece(), then print intake.hasPiece(). Call intake.stopIntake(), then print both again."
+/>
+
+## What's next
+
+In **Software Engineering Lesson 03**, we'll tackle Command Composition — how to chain, interleave, and combine simple commands into complex autonomous routines without writing a single state machine by hand.

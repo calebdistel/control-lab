@@ -1,0 +1,374 @@
+---
+track: frc-intro
+lesson: 4
+title: Your First Robot Program
+prereqs: [frc-intro-03]
+objectives:
+  - Identify the purpose of each lifecycle method in TimedRobot
+  - Read a joystick axis value and use it to set a motor controller speed
+  - Explain why teleopPeriodic is called instead of a while loop
+  - Write a basic tank drive function mapping two joystick axes to two motors
+---
+
+import Key from '../../../components/Key.astro';
+import Try from '../../../components/Try.astro';
+import Note from '../../../components/Note.astro';
+import Warn from '../../../components/Warn.astro';
+import CodeTrace from '../../../components/demos/CodeTrace.jsx';
+import Quiz from '../../../components/demos/Quiz.jsx';
+import CodeEditor from '../../../components/demos/CodeEditor.jsx';
+
+## Hook
+
+The robot is wired, the code is deployed, Driver Station is connected. You click Enable. Nothing happens.
+
+You open `Robot.java`. The template has six methods in it. You pasted your motor control code into `robotInit()` — the method that runs once at startup. The motor ran for a split second, then stopped.
+
+Every experienced FRC programmer has made this mistake. The fix is understanding the lifecycle: which method runs when, how often, and what each one is designed for.
+
+## The TimedRobot lifecycle
+
+`TimedRobot` is the base class for almost every FRC robot program. It provides a set of methods that WPILib calls automatically based on what the robot is doing. You **override** these methods to add your behavior.
+
+Here's the full lifecycle:
+
+```java
+public class Robot extends TimedRobot {
+
+    @Override
+    public void robotInit() {
+        // Called ONCE when the robot program starts.
+        // Create motor controllers, sensors, joysticks here.
+    }
+
+    @Override
+    public void robotPeriodic() {
+        // Called EVERY 20ms regardless of mode.
+        // Good for logging, updating SmartDashboard.
+    }
+
+    @Override
+    public void teleopInit() {
+        // Called ONCE when entering teleop mode.
+        // Reset any state that teleop depends on.
+    }
+
+    @Override
+    public void teleopPeriodic() {
+        // Called EVERY 20ms while in teleop mode.
+        // Read joysticks, set motors — this is your main driver-control loop.
+    }
+
+    @Override
+    public void autonomousInit() {
+        // Called ONCE when autonomous begins.
+    }
+
+    @Override
+    public void autonomousPeriodic() {
+        // Called EVERY 20ms during autonomous.
+        // Execute your auto routine here.
+    }
+
+    @Override
+    public void disabledPeriodic() {
+        // Called EVERY 20ms while disabled.
+        // Useful for reading sensors even when motors can't run.
+    }
+}
+```
+
+<Key>
+`robotInit()` runs once at startup. `teleopPeriodic()` runs 50 times per second during driver control. Put initialization in `Init` methods. Put ongoing behavior in `Periodic` methods.
+</Key>
+
+### Lifecycle timing
+
+```
+Robot powers on
+    ↓
+robotInit()              ← once
+    ↓
+[disabled — waiting for Driver Station enable]
+disabledPeriodic()       ← every 20ms
+    ↓
+[Driver Station: Enable Teleop]
+teleopInit()             ← once
+teleopPeriodic()         ← every 20ms, 50x/second
+    ↓
+[Driver Station: Disable]
+disabledPeriodic()       ← every 20ms again
+```
+
+This is why putting motor code in `robotInit()` made the motor blip: it ran once and immediately returned. The motor ran for one 20ms tick, then the scheduler moved on to the disabled state — and WPILib zeros all motors on disable.
+
+## Declaring hardware objects
+
+In Java, you declare your hardware as **fields** of the Robot class so every method can use them. You instantiate them in `robotInit()`.
+
+```java
+import com.revrobotics.CANSparkMax;
+import com.revrobotics.CANSparkLowLevel.MotorType;
+import edu.wpi.first.wpilibj.Joystick;
+
+public class Robot extends TimedRobot {
+
+    // Declare fields at the class level
+    private CANSparkMax leftMotor;
+    private CANSparkMax rightMotor;
+    private Joystick driverController;
+
+    @Override
+    public void robotInit() {
+        // Instantiate them here
+        leftMotor = new CANSparkMax(1, MotorType.kBrushless);
+        rightMotor = new CANSparkMax(2, MotorType.kBrushless);
+        driverController = new Joystick(0);  // USB port 0 in Driver Station
+    }
+}
+```
+
+**Why declare at class level, not inside `robotInit`?** If you declared `leftMotor` as a local variable inside `robotInit()`, it would go out of scope when that method returned. `teleopPeriodic()` would have no way to reach it. Fields belong to the whole class — every method can access them.
+
+<Note>
+The number you pass to `new CANSparkMax(1, ...)` is the **CAN ID** of the motor controller. It must match the ID configured on the physical hardware using the REV Hardware Client. CAN ID mismatches are one of the most common reasons a motor does nothing.
+</Note>
+
+## Reading a joystick
+
+The `Joystick` class (or the newer `XboxController` class) reads input from a gamepad or flight stick connected to the Driver Station laptop.
+
+```java
+// Joystick axis values range from -1.0 to +1.0
+double speed = driverController.getRawAxis(1);   // left stick Y-axis
+```
+
+Common axis numbers for a standard Logitech joystick:
+- Axis 0: X (left/right)
+- Axis 1: Y (forward/back) — **note: pushing forward gives a negative value**
+
+For an Xbox controller, use `XboxController` for named methods:
+
+```java
+import edu.wpi.first.wpilibj.XboxController;
+
+XboxController xbox = new XboxController(0);
+double speed = xbox.getLeftY();        // left stick Y axis
+double turn  = xbox.getRightX();       // right stick X axis
+```
+
+<Warn>
+On most joysticks, pushing the stick **forward** gives a **negative** value (axis returns -1.0 at full forward). This is the industry standard but always surprises beginners. Negate the axis value if your robot drives backwards when you push forward.
+</Warn>
+
+## Setting motor speed
+
+`CANSparkMax.set(double speed)` takes a value from -1.0 to 1.0:
+- `1.0` = full power forward
+- `-1.0` = full power reverse
+- `0.0` = stop
+
+Putting it together — a minimal single-motor teleop:
+
+```java
+@Override
+public void teleopPeriodic() {
+    double speed = driverController.getRawAxis(1);
+    leftMotor.set(speed);
+}
+```
+
+Every 20ms: read the joystick, send the value to the motor. That's it. The motor controller receives the command over CAN bus and outputs the appropriate voltage.
+
+## Tank drive
+
+A **tank drive** robot has two independent sides — left motors and right motors. Each side is controlled by a separate joystick axis.
+
+```java
+@Override
+public void teleopPeriodic() {
+    // Left stick Y controls left side, right stick Y controls right side
+    double leftSpeed  = -driverController.getRawAxis(1);  // negate: forward = negative
+    double rightSpeed = -driverController.getRawAxis(5);  // axis 5 = right stick Y
+
+    leftMotor.set(leftSpeed);
+    rightMotor.set(rightSpeed);
+}
+```
+
+<Note>
+If your robot has two motors per side (four motors total), you can use `rightMotor.follow(leftMotor)` to make the second motor mirror the first, then only set the lead motor. Or set all motors explicitly — either approach works.
+</Note>
+
+### Adding a deadband
+
+Joystick axes are rarely exactly 0.0 when you're not touching them — electrical noise and mechanical slop mean you might see values like 0.03 or -0.02. Without a deadband, the motors will twitch and hum constantly.
+
+```java
+private double applyDeadband(double value, double threshold) {
+    if (Math.abs(value) < threshold) return 0.0;
+    return value;
+}
+
+@Override
+public void teleopPeriodic() {
+    double leftSpeed  = applyDeadband(-driverController.getRawAxis(1), 0.1);
+    double rightSpeed = applyDeadband(-driverController.getRawAxis(5), 0.1);
+
+    leftMotor.set(leftSpeed);
+    rightMotor.set(rightSpeed);
+}
+```
+
+WPILib also provides `MathUtil.applyDeadband(value, threshold)` — but understanding how it works matters more than using a utility.
+
+## Tracing a single periodic call
+
+Let's trace what happens in one 20ms call to `teleopPeriodic()` when the driver pushes the left stick halfway forward:
+
+<CodeTrace
+  client:load
+  variables={{ rawAxis: -0.5, leftSpeed: "?", sentToMotor: "?" }}
+  steps={[
+    { code: "getRawAxis(1)",                     state: { rawAxis: -0.5, leftSpeed: "?", sentToMotor: "?" }, comment: "stick at 50% forward → -0.5" },
+    { code: "negate: -(-0.5)",                   state: { rawAxis: -0.5, leftSpeed: "?", sentToMotor: "?" }, comment: "forward becomes positive" },
+    { code: "applyDeadband(0.5, 0.1)",           state: { rawAxis: -0.5, leftSpeed: "?", sentToMotor: "?" }, comment: "0.5 > 0.1 → pass through" },
+    { code: "leftSpeed = 0.5",                   state: { rawAxis: -0.5, leftSpeed: 0.5, sentToMotor: "?" }, comment: "stored" },
+    { code: "leftMotor.set(0.5)",                state: { rawAxis: -0.5, leftSpeed: 0.5, sentToMotor: 0.5 }, comment: "CAN message sent" },
+  ]}
+/>
+
+## Putting it all together
+
+Here's a complete, minimal robot program for a two-motor tank drive:
+
+```java
+package frc.robot;
+
+import com.revrobotics.CANSparkMax;
+import com.revrobotics.CANSparkLowLevel.MotorType;
+import edu.wpi.first.math.MathUtil;
+import edu.wpi.first.wpilibj.TimedRobot;
+import edu.wpi.first.wpilibj.XboxController;
+
+public class Robot extends TimedRobot {
+
+    private CANSparkMax leftMotor;
+    private CANSparkMax rightMotor;
+    private XboxController controller;
+
+    @Override
+    public void robotInit() {
+        leftMotor  = new CANSparkMax(1, MotorType.kBrushless);
+        rightMotor = new CANSparkMax(2, MotorType.kBrushless);
+        controller = new XboxController(0);
+    }
+
+    @Override
+    public void teleopPeriodic() {
+        double leftSpeed  = MathUtil.applyDeadband(-controller.getLeftY(),  0.1);
+        double rightSpeed = MathUtil.applyDeadband(-controller.getRightY(), 0.1);
+
+        leftMotor.set(leftSpeed);
+        rightMotor.set(rightSpeed);
+    }
+
+    @Override
+    public void disabledInit() {
+        leftMotor.set(0.0);
+        rightMotor.set(0.0);
+    }
+}
+```
+
+This is a complete, deployable robot program. Deploy it, enable in Teleop, and your robot drives.
+
+## Knowledge check
+
+<Quiz
+  client:load
+  question="You put motor.set(0.5) in robotInit(). The motor runs briefly then stops. Why?"
+  options={[
+    "robotInit() only runs once — it sets the motor, then the program moves on and WPILib zeros outputs on disable",
+    "robotInit() is called 50 times per second, so the motor resets each call",
+    "motor.set() requires a loop to work",
+    "The motor controller is not connected to CAN bus"
+  ]}
+  correct={0}
+  explanation="robotInit() runs exactly once at startup. After it returns, the program enters the disabled state, and WPILib zeros all motor outputs. Motor commands must be inside a Periodic method to persist."
+/>
+
+<Quiz
+  client:load
+  question="A joystick axis returns -0.03 when untouched. Without a deadband, what happens?"
+  options={[
+    "Nothing — the motor controller ignores values below 0.1 automatically",
+    "The motor twitches or hums with tiny power commands every 20ms",
+    "The robot enters a fault state and disables",
+    "getRawAxis() always returns exactly 0.0 at rest"
+  ]}
+  correct={1}
+  explanation="Motor controllers faithfully execute whatever value you send. A -0.03 command means 3% power in reverse — small but real. Over thousands of periodic calls, this causes audible buzzing and wasted current. A deadband zeroes these noise values out."
+/>
+
+## Key takeaways
+
+- `robotInit()` runs once; `teleopPeriodic()` runs 50 times per second during driver control. Initialize hardware in `Init`, control it in `Periodic`.
+- Declare hardware objects as class fields so all lifecycle methods can access them.
+- Joystick axes return -1.0 to 1.0; pushing forward is typically negative — negate it for intuitive control.
+- Apply a deadband (typically 0.05–0.1) to eliminate joystick noise.
+- A complete tank drive is only ~10 meaningful lines of code.
+
+## Common confusions
+
+**"My motor runs in the wrong direction."** Either negate the `set()` value, or call `motor.setInverted(true)` once in `robotInit()`. Inversion bakes the reversal into the motor controller so you don't have to track it in every `set()` call.
+
+**"The robot drives forward when I push back and back when I push forward."** You forgot to negate the Y-axis. `getLeftY()` returns -1.0 at full forward. Multiply by -1 or negate: `-controller.getLeftY()`.
+
+**"I'm reading axis 1 but getting 0.0 every time."** Check Driver Station's USB Devices tab. Your joystick might be on a different USB port than 0, so `new Joystick(0)` is reading nothing. Re-order the devices in Driver Station to put your controller at port 0.
+
+## Challenge
+
+<Try>
+Write a `tankDrive` method that takes two speed values, applies a deadband of 0.1 to each, and returns them as a `double[]`. Then call it from `teleopPeriodic`.
+
+For this exercise, simulate it: given left and right axis inputs, compute and print the final speeds that would go to the motors.
+</Try>
+
+<CodeEditor
+  client:load
+  starterCode={`public class Main {
+
+    static double applyDeadband(double value, double threshold) {
+        // Return 0.0 if |value| < threshold, otherwise return value
+        return value; // fix this
+    }
+
+    static double[] tankDrive(double leftAxis, double rightAxis) {
+        // Negate both axes (forward = positive), apply deadband
+        // Return new double[]{ leftSpeed, rightSpeed }
+        return new double[]{leftAxis, rightAxis}; // fix this
+    }
+
+    public static void main(String[] args) {
+        double[] out;
+
+        out = tankDrive(-0.8, -0.6);
+        System.out.println(out[0] + " " + out[1]);  // 0.8 0.6
+
+        out = tankDrive(0.05, -0.03);
+        System.out.println(out[0] + " " + out[1]);  // 0.0 0.0
+
+        out = tankDrive(-1.0, 0.5);
+        System.out.println(out[0] + " " + out[1]);  // 1.0 -0.5
+    }
+}`}
+  testCases={[
+    { label: "Deadband and negate applied correctly", expected: "0.8 0.6\n0.0 0.0\n1.0 -0.5" },
+  ]}
+  hint="Negate the axis before applying deadband. Math.abs() helps you check if a value is within the deadband threshold."
+/>
+
+## What's next
+
+In **Lesson 5**, we'll explore the Command-Based architecture — WPILib's recommended way to organize robot code so that mechanisms, autonomous routines, and driver controls don't tangle together as your robot grows more complex.

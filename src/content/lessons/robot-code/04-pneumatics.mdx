@@ -1,0 +1,371 @@
+---
+track: robot-code
+lesson: 4
+title: Pneumatics
+prereqs: [robot-code-02]
+objectives:
+  - Describe the pneumatic system components (compressor, tank, solenoid, cylinder) and their roles
+  - Distinguish single-acting from double-acting solenoids and choose the right WPILib class for each
+  - Instantiate and control Solenoid and DoubleSolenoid using the PneumaticsHub or PCM
+  - Enable and disable the compressor programmatically and explain when each is appropriate
+  - List at least two safety practices for working with a pressurized pneumatic system
+---
+
+import Key from '../../../components/Key.astro';
+import Try from '../../../components/Try.astro';
+import Note from '../../../components/Note.astro';
+import Warn from '../../../components/Warn.astro';
+import CodeTrace from '../../../components/demos/CodeTrace.jsx';
+import Quiz from '../../../components/demos/Quiz.jsx';
+import CodeEditor from '../../../components/demos/CodeEditor.jsx';
+
+## Hook
+
+Your gripper needs to open and close in under 100 milliseconds — fast enough to grab a game piece before the robot slides past. A motor-driven gripper takes 300ms just to ramp up speed. Pneumatics can slam open or closed in under 50ms because stored air pressure is already doing the work.
+
+Many FRC mechanisms that seem slow in software — intakes, poppers, passive locks — are actually best implemented with pneumatics. But pressurized air introduces hazards that motors don't. A cylinder extended at 60 PSI has enough force to break fingers. This lesson covers both the code and the safety rules.
+
+## Core concept
+
+<Key>
+A pneumatic system stores compressed air in a tank. Solenoid valves route that air to extend or retract cylinders. Your code controls the solenoids — it doesn't control the air pressure directly. The compressor runs automatically (or on command) to keep the tank within the legal 60-PSI operating range.
+</Key>
+
+## How FRC pneumatics work
+
+The physical system has five main parts:
+
+1. **Compressor** — fills the storage tank by pumping air from the environment. The VIAIR 090C is the most common in FRC.
+2. **Storage tank(s)** — hold compressed air at up to 120 PSI (the input side). A regulator drops working pressure to 60 PSI on the output side.
+3. **Pressure switch** — a digital sensor that tells the compressor when to stop (typically ≥115 PSI) and start again (≤95 PSI). The Pneumatics Hub handles this automatically.
+4. **Solenoid valves** — electrically controlled valves that direct air to extend or retract a cylinder. Controlled by your code.
+5. **Cylinders (actuators)** — convert air pressure into linear motion. Can be single-acting (spring return) or double-acting (air drives both directions).
+
+```
+Compressor → Storage Tank → Regulator → Solenoid Valve → Cylinder
+               ↑                              ↑
+          Pressure Switch              Your code controls this
+```
+
+## Control modules: PneumaticsHub vs PCM
+
+Two control modules can appear in FRC robots:
+
+| Module | Class | Connection | Years active |
+|---|---|---|---|
+| CTRE Pneumatics Control Module (PCM) | `PneumaticsModuleType.CTREPCM` | CAN | 2015–present |
+| REV Pneumatics Hub (PH) | `PneumaticsModuleType.REVPH` | CAN | 2022–present |
+
+The programming interface is identical — you just pass the correct `PneumaticsModuleType` enum when constructing solenoids. The PCM's default CAN ID is 0; the Pneumatics Hub defaults to 1.
+
+## Single-acting solenoids: `Solenoid`
+
+A single-acting solenoid has **one coil**. Energize it and the valve opens, routing air to extend the cylinder. De-energize it and a spring returns the cylinder to its retracted position.
+
+```java
+import edu.wpi.first.wpilibj.Solenoid;
+import edu.wpi.first.wpilibj.PneumaticsModuleType;
+
+// PneumaticsHub (REV) on CAN ID 1, solenoid channel 0
+private final Solenoid clawSolenoid = new Solenoid(1, PneumaticsModuleType.REVPH, 0);
+
+// Extend the cylinder (energize the solenoid)
+clawSolenoid.set(true);
+
+// Retract — spring return takes over
+clawSolenoid.set(false);
+
+// Toggle current state
+clawSolenoid.toggle();
+
+// Read current state
+boolean isExtended = clawSolenoid.get();
+```
+
+Use a `Solenoid` when the spring return position is acceptable as a "default" state — often retracted (open gripper, retracted intake).
+
+## Double-acting solenoids: `DoubleSolenoid`
+
+A double-acting solenoid has **two coils**, one for each direction. Air drives the cylinder both ways — there's no spring return. This gives you more force in both directions but requires two channels on the control module.
+
+```java
+import edu.wpi.first.wpilibj.DoubleSolenoid;
+import edu.wpi.first.wpilibj.DoubleSolenoid.Value;
+import edu.wpi.first.wpilibj.PneumaticsModuleType;
+
+// Channels 0 (forward) and 1 (reverse) on the PCM at CAN ID 0
+private final DoubleSolenoid deploySolenoid =
+    new DoubleSolenoid(0, PneumaticsModuleType.CTREPCM, 0, 1);
+
+// Extend the cylinder
+deploySolenoid.set(Value.kForward);
+
+// Retract the cylinder
+deploySolenoid.set(Value.kReverse);
+
+// Hold last position with no air flow (saves pressure)
+deploySolenoid.set(Value.kOff);
+
+// Read current state
+Value state = deploySolenoid.get(); // kForward, kReverse, or kOff
+```
+
+`Value.kOff` de-energizes both coils. The cylinder stays in its last position (held mechanically by the load or gravity). This is useful for saving air — you only need a pulse of pressure to move the cylinder, then you can switch to `kOff`.
+
+<Note>
+You cannot energize both coils simultaneously. If you try, the cylinder won't know which way to go and could damage the solenoid. WPILib prevents setting both directions at once through the `Value` enum — there's no `kBoth`.
+</Note>
+
+## Controlling the compressor
+
+The compressor is managed by `Compressor`, which is automatically created when you instantiate any `Solenoid`. You can also create it explicitly to configure behavior.
+
+```java
+import edu.wpi.first.wpilibj.Compressor;
+import edu.wpi.first.wpilibj.PneumaticsModuleType;
+
+// Create explicitly (optional — solenoids create it automatically)
+private final Compressor compressor = new Compressor(1, PneumaticsModuleType.REVPH);
+```
+
+**Closed-loop pressure control (recommended):**
+
+```java
+// Enable automatic control — compressor runs when pressure is low, stops when full
+compressor.enableDigital(); // uses the built-in pressure switch
+```
+
+**Analog pressure control (REV Pneumatics Hub only):**
+
+```java
+// Use the onboard analog pressure sensor for tighter control
+compressor.enableAnalog(60.0, 120.0); // min PSI, max PSI
+```
+
+**Disable the compressor:**
+
+```java
+compressor.disable();
+// Use this if compressor noise/vibration interferes with autonomous sensors,
+// or to save battery for a critical end-game action
+```
+
+**Reading pressure (REV Pneumatics Hub):**
+
+```java
+double currentPSI = compressor.getPressure(); // requires analog sensor
+```
+
+<Warn>
+The compressor draws 15–20 amps and its motor vibrates significantly. Some teams disable it during autonomous to prevent sensor noise. If you disable it, re-enable it at the start of teleop — otherwise you'll run out of stored air mid-match.
+</Warn>
+
+## Complete PneumaticsSubsystem example
+
+```java
+import edu.wpi.first.wpilibj.Compressor;
+import edu.wpi.first.wpilibj.DoubleSolenoid;
+import edu.wpi.first.wpilibj.DoubleSolenoid.Value;
+import edu.wpi.first.wpilibj.PneumaticsModuleType;
+import edu.wpi.first.wpilibj.Solenoid;
+import edu.wpi.first.wpilibj.smartdashboard.SmartDashboard;
+import edu.wpi.first.wpilibj2.command.SubsystemBase;
+
+public class IntakeSubsystem extends SubsystemBase {
+
+    // REV Pneumatics Hub at CAN ID 1
+    private static final int PH_CAN_ID = 1;
+    private static final PneumaticsModuleType MODULE_TYPE = PneumaticsModuleType.REVPH;
+
+    private final Compressor compressor = new Compressor(PH_CAN_ID, MODULE_TYPE);
+
+    // Single solenoid: claw (spring-retract = open)
+    private final Solenoid clawSolenoid = new Solenoid(PH_CAN_ID, MODULE_TYPE, 0);
+
+    // Double solenoid: arm deployment (needs force in both directions)
+    private final DoubleSolenoid armSolenoid = new DoubleSolenoid(PH_CAN_ID, MODULE_TYPE, 2, 3);
+
+    public IntakeSubsystem() {
+        compressor.enableDigital(); // closed-loop pressure control
+        clawSolenoid.set(false);    // start retracted (open)
+        armSolenoid.set(Value.kReverse); // start arm retracted
+    }
+
+    /** Close the claw (extend cylinder) */
+    public void closeClaw() {
+        clawSolenoid.set(true);
+    }
+
+    /** Open the claw (retract via spring return) */
+    public void openClaw() {
+        clawSolenoid.set(false);
+    }
+
+    /** Deploy intake arm outward */
+    public void deployArm() {
+        armSolenoid.set(Value.kForward);
+    }
+
+    /** Retract intake arm */
+    public void retractArm() {
+        armSolenoid.set(Value.kReverse);
+    }
+
+    /** Stop air flow — cylinder holds last position */
+    public void holdArm() {
+        armSolenoid.set(Value.kOff);
+    }
+
+    public boolean isClawClosed() {
+        return clawSolenoid.get();
+    }
+
+    public boolean isArmDeployed() {
+        return armSolenoid.get() == Value.kForward;
+    }
+
+    @Override
+    public void periodic() {
+        SmartDashboard.putBoolean("Intake/ClawClosed",   isClawClosed());
+        SmartDashboard.putBoolean("Intake/ArmDeployed",  isArmDeployed());
+        SmartDashboard.putNumber("Intake/PressurePSI",   compressor.getPressure());
+        SmartDashboard.putBoolean("Intake/Compressor",   compressor.isEnabled());
+    }
+}
+```
+
+<CodeTrace
+  client:load
+  variables={{ claw: "open", arm: "retracted", pressure: "95 PSI", compressor: "on" }}
+  steps={[
+    { code: "IntakeSubsystem()",          state: { claw: "open",   arm: "retracted", pressure: "95 PSI",  compressor: "on"  }, comment: "startup state" },
+    { code: "deployArm()",                state: { claw: "open",   arm: "deployed",  pressure: "90 PSI",  compressor: "on"  }, comment: "air consumed extending arm" },
+    { code: "holdArm()",                  state: { claw: "open",   arm: "deployed",  pressure: "90 PSI",  compressor: "on"  }, comment: "kOff — no air flowing" },
+    { code: "closeClaw()",                state: { claw: "closed", arm: "deployed",  pressure: "86 PSI",  compressor: "on"  }, comment: "claw grabs game piece" },
+    { code: "compressor fills tank",      state: { claw: "closed", arm: "deployed",  pressure: "115 PSI", compressor: "off" }, comment: "pressure switch stops compressor" },
+    { code: "retractArm()",               state: { claw: "closed", arm: "retracted", pressure: "110 PSI", compressor: "off" }, comment: "arm pulled back" },
+    { code: "openClaw()",                 state: { claw: "open",   arm: "retracted", pressure: "110 PSI", compressor: "off" }, comment: "spring returns claw open" },
+  ]}
+/>
+
+## Safety rules
+
+Pneumatics carry real mechanical hazard. These practices are non-negotiable on a well-run team:
+
+1. **Dump the pressure before mechanical work.** A cylinder under 60 PSI can snap a finger. The dump valve on your pressure regulator exists for this purpose. Use it every time someone reaches into the robot.
+
+2. **Never leave a cylinder extended during transport or storage.** If the solenoid de-energizes unexpectedly, a cylinder extends with full force. Code a `retractAll()` method and call it in `disabledInit()`.
+
+3. **Know your PSI limits.** FRC rules cap the working pressure at 60 PSI. The primary storage side can be up to 120 PSI. Understand which side of the regulator you're on.
+
+4. **Wear safety glasses during pressure testing.** A fitting that blows off a pressurized line becomes a projectile.
+
+5. **Test new solenoid wiring unpressurized first.** Confirm the logic (which channel does what) before adding pressure, so the cylinder doesn't unexpectedly slam when you first enable.
+
+```java
+// In Robot.java or RobotContainer:
+@Override
+public void disabledInit() {
+    intakeSubsystem.retractArm();
+    intakeSubsystem.openClaw();
+}
+```
+
+<Warn>
+Always implement `disabledInit()` to retract all cylinders. In competition, robots are handled between matches with mechanisms that may still be pressurized. An unexpected deployment can injure drive team members or damage other robots.
+</Warn>
+
+## Key takeaways
+
+- Solenoids route air to cylinders. Your code controls solenoids, not pressure directly.
+- `Solenoid` is for single-acting (spring return) cylinders; `DoubleSolenoid` is for double-acting (air drives both ways).
+- `DoubleSolenoid.Value.kOff` cuts air flow and holds position — saves pressure during long holds.
+- The compressor runs automatically with `enableDigital()`. Disable it in autonomous if sensor noise is an issue.
+- Always retract cylinders in `disabledInit()` and dump pressure before mechanical work.
+
+## Common confusions
+
+**"My solenoid fires but the cylinder doesn't move."** Check: (1) Is the system pressurized? Verify pressure on the driver station display. (2) Is the CAN module connected? Check the PCM/PH LED status. (3) Are the channel numbers correct? Physically trace the tubing from the solenoid block.
+
+**"The compressor won't turn on."** Confirm `enableDigital()` was called. Check that the pressure switch wiring is intact — an open pressure switch reads as "full" and prevents the compressor from running.
+
+**"`DoubleSolenoid.get()` returns `kOff` but I set `kForward`."** `get()` returns the last set value. If power was interrupted or the subsystem was re-initialized, the state resets. Read the physical state with a separate limit switch or sensor if hardware truth is needed.
+
+**"Cylinder moves slowly or only partially."** The air supply pressure may be too low (check PSI), there may be a restriction in the tubing, or the cylinder bore is large and there isn't enough stored volume. Smaller-bore cylinders act faster.
+
+## Challenge
+
+<Try>
+Model pneumatic state transitions in pure Java — no hardware involved. Implement a `PneumaticCylinder` class that tracks the state of a double-acting solenoid (EXTENDED, RETRACTED, or HOLDING) and logs each transition. Then simulate a sequence of commands and verify the state machine behaves correctly.
+</Try>
+
+<CodeEditor
+  client:load
+  starterCode={`public class PneumaticsSimulation {
+
+    enum CylinderState { EXTENDED, RETRACTED, HOLDING }
+
+    static class PneumaticCylinder {
+        private CylinderState state = CylinderState.RETRACTED;
+        private final String name;
+
+        PneumaticCylinder(String name) {
+            this.name = name;
+            System.out.println(name + " initialized: " + state);
+        }
+
+        /** Extend the cylinder (kForward equivalent) */
+        public void extend() {
+            // TODO: set state to EXTENDED and log the transition
+        }
+
+        /** Retract the cylinder (kReverse equivalent) */
+        public void retract() {
+            // TODO: set state to RETRACTED and log the transition
+        }
+
+        /** Hold current position (kOff equivalent) */
+        public void hold() {
+            // TODO: set state to HOLDING and log the transition
+        }
+
+        public CylinderState getState() {
+            return state;
+        }
+
+        private void logTransition(CylinderState newState) {
+            System.out.println(name + ": " + state + " -> " + newState);
+            state = newState;
+        }
+    }
+
+    public static void main(String[] args) {
+        PneumaticCylinder arm = new PneumaticCylinder("ArmCylinder");
+        PneumaticCylinder claw = new PneumaticCylinder("ClawCylinder");
+
+        arm.extend();
+        claw.extend();
+        arm.hold();    // hold arm in place after extending
+        claw.retract();
+        arm.retract();
+
+        System.out.println("Final arm state: " + arm.getState());
+        System.out.println("Final claw state: " + claw.getState());
+    }
+}`}
+  testCases={[
+    { label: "ArmCylinder initialized RETRACTED",          expected: "ArmCylinder initialized: RETRACTED" },
+    { label: "ArmCylinder extends",                        expected: "ArmCylinder: RETRACTED -> EXTENDED" },
+    { label: "ClawCylinder extends",                       expected: "ClawCylinder: RETRACTED -> EXTENDED" },
+    { label: "ArmCylinder goes to HOLDING",                expected: "ArmCylinder: EXTENDED -> HOLDING" },
+    { label: "ClawCylinder retracts",                      expected: "ClawCylinder: EXTENDED -> RETRACTED" },
+    { label: "ArmCylinder retracts",                       expected: "ArmCylinder: HOLDING -> RETRACTED" },
+    { label: "Final arm state RETRACTED",                  expected: "Final arm state: RETRACTED" },
+    { label: "Final claw state RETRACTED",                 expected: "Final claw state: RETRACTED" },
+  ]}
+  hint="In each method (extend, retract, hold), call logTransition() with the appropriate CylinderState. logTransition() handles printing and updating the state field."
+/>
+
+## What's next
+
+In **Robot Code Lesson 05** we'll build on both motors (Lesson 02) and sensors (Lesson 03) with the architectural pattern that ties them together: Subsystems. You'll learn exactly what belongs in a Subsystem, how `SubsystemBase` and `periodic()` work, and how the CommandScheduler enforces that only one command owns a subsystem at a time.
