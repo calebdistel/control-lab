@@ -1,0 +1,339 @@
+---
+track: control-systems
+lesson: 7
+title: "Combining PID and Feedforward"
+prereqs: [control-systems-06]
+objectives:
+  - Explain why feedforward alone cannot handle disturbances and why PID alone is slow to respond
+  - Describe the combined FF + PID architecture and how each component contributes
+  - Implement a flywheel or drivetrain velocity controller using both feedforward and PID
+  - Identify which component (FF or PID) should handle each type of real-world scenario
+---
+
+import Key from '../../../components/Key.astro';
+import Try from '../../../components/Try.astro';
+import Note from '../../../components/Note.astro';
+import Warn from '../../../components/Warn.astro';
+import CodeTrace from '../../../components/demos/CodeTrace.jsx';
+import Quiz from '../../../components/demos/Quiz.jsx';
+import CodeEditor from '../../../components/demos/CodeEditor.jsx';
+
+## Hook
+
+In the last two lessons you built two weapons:
+
+1. **Feedforward**: computes the right output from physics. Fast and predictive, but can't react to surprises.
+2. **PID**: reacts to sensor error. Handles anything feedforward misses, but is always one step behind — it waits for error to develop before correcting.
+
+Neither alone is the full story. Pure feedforward is like a skilled chef who measures every ingredient perfectly — except when someone swaps the salt for sugar (a disturbance). Pure PID is like an amateur who only corrects when they taste something wrong — always a bit late, and spending too much effort on problems they could have anticipated.
+
+The pro move: combine them. Feedforward handles the expected. PID handles the unexpected.
+
+## Core concept
+
+<Key>
+In a combined FF + PID controller, the feedforward term contributes the bulk of the output based on the desired setpoint and known physics, while the PID term contributes a small correction based on the error between the desired and actual state. The motor receives the sum: output = FF + PID. This allows the system to respond quickly (FF) and accurately (PID) simultaneously, with smaller gains needed for each term individually.
+</Key>
+
+### Why FF alone fails
+
+Feedforward is based on a model: "I know this mechanism needs approximately X volts to run at Y RPM." But models are never perfect:
+
+- **Battery sag**: as the battery discharges during a match, the same voltage command produces less current. FF doesn't know the battery dropped from 12.5 V to 11.8 V.
+- **Mechanical wear**: friction changes over time. A gearbox that was characterized in week 1 may have more friction by week 6.
+- **Load disturbances**: a game piece entering a shooter mechanism adds inertia. FF doesn't know the piece is there.
+- **Manufacturing variance**: two robots built to identical specs will have slightly different kV values. FF constants from one won't perfectly apply to another.
+
+Without feedback, these disturbances accumulate as steady errors. The flywheel that ran at exactly 3500 RPM in characterization might run at 3420 RPM in competition.
+
+### Why PID alone is slow
+
+PID can only act after error has already developed. For a step change in setpoint (e.g., flywheel spinning up from 0 to 3500 RPM):
+
+1. **Loop 1**: error = 3500 RPM. PID output is large. But "large" is relative to kP — if kP is small enough to avoid oscillation, the output on the first loop is still modest.
+2. **Loop 10**: flywheel is at 1000 RPM. Error = 2500 RPM. PID is still pushing hard.
+3. **Loop 50**: flywheel at 2800 RPM. Error = 700 RPM. Output is now modest.
+
+The spin-up takes dozens of loop cycles. Meanwhile, the robot might have already moved and fired. For a shooter, slow spin-up means inconsistent shots.
+
+The PID gains that give fast spin-up tend to cause oscillation around the setpoint. So teams end up with a tradeoff: either fast but oscillating, or stable but slow.
+
+Feedforward breaks that tradeoff. With FF supplying 90% of the required output from loop 1, the PID only needs to add a small trim — and small PID gains don't oscillate.
+
+### The combined architecture
+
+```
+              desired setpoint
+                     |
+          +----------+----------+
+          |                     |
+    [Feedforward]          [PID Controller]
+    (kS, kV, kA, kG)       (kP, kI, kD)
+          |                     |
+          |   measurement ------>|
+          |                     |
+          +----------+----------+
+                     |
+                  [sum]
+                     |
+               motor output
+```
+
+In code, this is just an addition:
+
+```java
+double ffOutput = feedforward.calculate(desiredVelocity);
+double pidOutput = pidController.calculate(measurement, desiredVelocity);
+double totalOutput = ffOutput + pidOutput;
+motor.setVoltage(totalOutput);
+```
+
+The PID controller's gains can now be much smaller than if PID were doing the work alone, because FF handles the large steady-state requirement. Smaller PID gains mean less oscillation risk.
+
+### Practical example 1: flywheel velocity controller
+
+```java
+public class ShooterSubsystem extends SubsystemBase {
+    private final CANSparkMax motor = new CANSparkMax(1, MotorType.kBrushless);
+    private final RelativeEncoder encoder = motor.getEncoder();
+
+    // FF characterized via SysId: kS=0.20V, kV=0.00220V/(rot/s), kA=0.010V/(rot/s²)
+    // Note: WPILib uses rotations/second, not RPM
+    private final SimpleMotorFeedforward ff = new SimpleMotorFeedforward(0.20, 0.00220, 0.010);
+
+    // PID with small gains — FF does the heavy lifting
+    private final PIDController pid = new PIDController(0.0001, 0.000002, 0.0);
+
+    private double targetRPM = 0.0;
+
+    public ShooterSubsystem() {
+        pid.setTolerance(50.0); // within 50 RPM = at setpoint
+    }
+
+    public void setTargetRPM(double rpm) {
+        if (Math.abs(rpm - targetRPM) > 200.0) {
+            pid.reset(); // clear integrator on large setpoint changes
+        }
+        targetRPM = rpm;
+    }
+
+    public boolean isReady() {
+        return pid.atSetpoint();
+    }
+
+    @Override
+    public void periodic() {
+        double currentRPM = encoder.getVelocity(); // REV returns RPM
+
+        // Convert RPM to rotations/second for FF (WPILib FF units)
+        double targetRPS = targetRPM / 60.0;
+        double currentRPS = currentRPM / 60.0;
+
+        double ffVolts = ff.calculate(targetRPS);           // predicts needed voltage
+        double pidVolts = pid.calculate(currentRPS, targetRPS) * 12.0; // scale PID to volts
+
+        double totalVolts = ffVolts + pidVolts;
+        motor.setVoltage(totalVolts);
+
+        // Log for tuning visualization
+        SmartDashboard.putNumber("Shooter/TargetRPM", targetRPM);
+        SmartDashboard.putNumber("Shooter/CurrentRPM", currentRPM);
+        SmartDashboard.putNumber("Shooter/FFVolts", ffVolts);
+        SmartDashboard.putNumber("Shooter/PIDVolts", pidVolts);
+    }
+}
+```
+
+Notice that the PID kP (0.0001) is tiny compared to what you'd need for a PID-only controller. The FF does the heavy lifting; the PID just corrects the 30-50 RPM error that remains.
+
+### Practical example 2: drivetrain velocity control
+
+For a differential drivetrain following a path, each wheel has its own FF + PID loop:
+
+```java
+public class DrivetrainSubsystem extends SubsystemBase {
+    // Two FF controllers, one per side
+    private final SimpleMotorFeedforward leftFF = new SimpleMotorFeedforward(kS, kV, kA);
+    private final SimpleMotorFeedforward rightFF = new SimpleMotorFeedforward(kS, kV, kA);
+
+    private final PIDController leftPID = new PIDController(0.5, 0.0, 0.0);
+    private final PIDController rightPID = new PIDController(0.5, 0.0, 0.0);
+
+    // In periodic() during autonomous path following:
+    public void setWheelSpeeds(DifferentialDriveWheelSpeeds speeds) {
+        double leftFF_V = leftFF.calculate(speeds.leftMetersPerSecond);
+        double rightFF_V = rightFF.calculate(speeds.rightMetersPerSecond);
+
+        double leftActual = leftEncoder.getRate();  // m/s
+        double rightActual = rightEncoder.getRate();
+
+        double leftPID_V = leftPID.calculate(leftActual, speeds.leftMetersPerSecond);
+        double rightPID_V = rightPID.calculate(rightActual, speeds.rightMetersPerSecond);
+
+        leftMotor.setVoltage(leftFF_V + leftPID_V);
+        rightMotor.setVoltage(rightFF_V + rightPID_V);
+    }
+}
+```
+
+### When each component handles what
+
+| Scenario | Handled by | Why |
+|---|---|---|
+| Initial spin-up from 0 RPM | **FF** (mostly) | FF immediately applies the right voltage; PID adds a small trim |
+| Battery sags 0.5 V mid-match | **PID** | FF doesn't know battery voltage changed; PID sees the RPM drop and increases output |
+| Game piece enters the shooter | **PID** | The added inertia slows the flywheel; PID detects the error and corrects |
+| Holding constant velocity at setpoint | **FF** (mostly) | kV * velocity provides the exact right voltage; PID's contribution is near zero |
+| Following a velocity trajectory | **FF + PID** | FF handles the predicted trajectory; PID corrects tracking error |
+| Unexpected wheel slipping on drivetrain | **PID** | FF has no model for slip; PID reacts to the velocity error |
+| Arm fighting gravity at horizontal position | **FF (kG)** | kG * cos(angle) perfectly compensates gravity; PID handles residual |
+
+### Tuning the combined controller
+
+The tuning sequence changes slightly when combining FF and PID:
+
+1. **Characterize FF first** (use SysId or manual estimation).
+2. **Verify FF alone**: command a constant setpoint with kP = kI = kD = 0. Does the mechanism reach approximately the right speed? Expect 5-15% error remaining.
+3. **Add P only**: increase kP until the residual error is corrected without oscillation. kP will be much smaller than it would be for PID-only.
+4. **Add I if needed**: for very precise applications (shooting distance matters significantly), a small kI eliminates the remaining few RPM of error.
+5. **kD is often not needed**: with FF doing most of the work, the mechanism approaches setpoint smoothly. D is only needed if there's still oscillation.
+
+<Note>
+When using setVoltage() instead of set(), the output is absolute (in volts) rather than relative to battery voltage. This makes FF more accurate because it doesn't change meaning when the battery sags. Always use setVoltage() with feedforward-based controllers.
+</Note>
+
+### Common pitfall: mixing normalized and voltage units
+
+A subtle bug: if your feedforward returns volts (e.g., 6.5 V) and your PID returns normalized output (-1 to 1), you can't directly add them.
+
+Wrong:
+```java
+double ff = feedforward.calculate(targetRPS); // returns 6.5 V
+double pid = pidController.calculate(measurement, setpoint); // returns -0.05 (normalized)
+motor.setVoltage(ff + pid); // BUG: pid is not in volts
+```
+
+Fix option A — scale PID to volts:
+```java
+double pidVolts = pidController.calculate(measurement, setpoint) * 12.0;
+motor.setVoltage(ff + pidVolts);
+```
+
+Fix option B — work entirely in normalized units:
+```java
+double ffNormalized = feedforward.calculate(targetRPS) / 12.0; // normalize FF
+double pid = pidController.calculate(measurement, setpoint);   // normalized
+motor.set(ffNormalized + pid);
+```
+
+Either works, but be consistent. Option A (working in volts) is preferred because it's battery-voltage-independent.
+
+<Warn>
+Mixing voltage and normalized units is one of the most common FF+PID bugs in FRC code. Always check that both terms are in the same units before summing them. A quick sanity check: at your target velocity, the FF term should be roughly 50-80% of 12 V (say, 6-10 V). If your PID-normalized term at steady state is 0.6 (which represents 7.2 V), and you add 0.6 + 0.6 = 1.2 (over full scale) you'll see unexpected behavior.
+</Warn>
+
+## Key takeaways
+
+- FF alone can't handle disturbances (battery changes, load changes, mechanical wear).
+- PID alone is slow to respond to large step changes in setpoint, forcing a tradeoff between speed and stability.
+- Combined FF + PID: FF handles the predictable, PID corrects the residual. `output = FF + PID`.
+- PID gains can be much smaller in a combined system, reducing oscillation risk.
+- Always use setVoltage() for FF-based systems; ensure both FF and PID outputs are in the same units before adding.
+- Log FF and PID contributions separately to Shuffleboard/AdvantageScope during tuning so you can see each term's contribution.
+
+## Common confusions
+
+**"My FF + PID controller still oscillates. Adding FF was supposed to fix that."**
+
+If the PID gains are the same as before you added FF, they're now too large — the PID is correcting a much smaller residual error with the same aggressive gains, causing it to overcorrect. Reduce kP by a factor of 5-10x when transitioning from PID-only to FF + PID.
+
+**"My FF is almost perfect but the mechanism always undershoots by the same amount."**
+
+A constant residual offset is typically a kS issue — the friction compensation is slightly too low. Increase kS slightly. If the offset changes with velocity, kV may be slightly off. If it changes with mechanism angle (arm), kG may be off.
+
+**"My PID term is fighting my FF term — they seem to be opposing each other."**
+
+Check the sign convention. If your encoder increases going forward, your motor positive direction is forward, and your setpoint is positive, then both FF and PID should produce positive output for a positive target. If they have opposite signs, one of your conventions is flipped.
+
+**"Which should I tune first at competition when I have 10 minutes?"**
+
+At competition with limited time: fix FF first (one test run to verify it gets approximately the right speed), then quickly tune kP to clean up residual error. Don't touch kI or kD under time pressure — they can introduce new problems quickly.
+
+## Challenge
+
+<Try>
+Given a flywheel with characterized feedforward constants and a small PID, compute the combined output for two scenarios:
+
+Scenario 1: Flywheel just commanded to 3000 RPM. Currently at 0 RPM. (Large initial error)
+Scenario 2: Flywheel at 2960 RPM, target 3000 RPM. (Small residual error)
+
+For each, compute: FF contribution, PID contribution, and total (in volts).
+Use: kS = 0.20 V, kV = 0.00210 V/RPM, kP = 0.001 (output in V/RPM error), kI = 0, kD = 0.
+PID formula for this exercise: pidOutput = kP * (setpoint - measurement) in Volts.
+</Try>
+
+<CodeEditor
+  client:load
+  starterCode={`public class CombinedController {
+    static double kS = 0.20;    // volts
+    static double kV = 0.00210; // volts per RPM
+    static double kP = 0.001;   // volts per RPM error
+
+    // Feedforward: kS * sign(velocity) + kV * velocity
+    // (kA = 0, constant velocity assumption)
+    static double computeFF(double targetRPM) {
+        // TODO: implement feedforward
+        return 0.0;
+    }
+
+    // Proportional: kP * error
+    static double computePID(double measurement, double setpoint) {
+        // TODO: implement P controller
+        return 0.0;
+    }
+
+    public static void main(String[] args) {
+        // Scenario 1: spin-up from 0 RPM to 3000 RPM
+        double target1 = 3000.0;
+        double meas1 = 0.0;
+        double ff1 = computeFF(target1);
+        double pid1 = computePID(meas1, target1);
+        double total1 = ff1 + pid1;
+        System.out.printf("Scenario 1 (0->3000 RPM):%n");
+        System.out.printf("  FF = %.3f V, PID = %.3f V, Total = %.3f V%n", ff1, pid1, total1);
+        System.out.printf("  FF is %.1f%% of total%n", ff1 / total1 * 100.0);
+
+        // Scenario 2: steady state near setpoint
+        double target2 = 3000.0;
+        double meas2 = 2960.0;
+        double ff2 = computeFF(target2);
+        double pid2 = computePID(meas2, target2);
+        double total2 = ff2 + pid2;
+        System.out.printf("Scenario 2 (2960->3000 RPM):%n");
+        System.out.printf("  FF = %.3f V, PID = %.3f V, Total = %.3f V%n", ff2, pid2, total2);
+    }
+}`}
+  testCases={[
+    { label: "Scenario 1 FF is 6.500 V", expected: "FF = 6.500 V" },
+    { label: "Scenario 1 PID is 3.000 V", expected: "PID = 3.000 V, Total = 9.500 V" },
+    { label: "Scenario 2 FF is 6.500 V", expected: "FF = 6.500 V, PID = 0.040 V" }
+  ]}
+  hint="FF: kS*sign(3000)+kV*3000 = 0.20 + 0.00210*3000 = 0.20 + 6.30 = 6.50 V. Scenario 1 PID: 0.001*(3000-0) = 3.0 V. Scenario 2 PID: 0.001*(3000-2960) = 0.04 V. Notice FF dominates in both cases."
+/>
+
+<Quiz
+  client:load
+  question="During a match, your flywheel is running at its 3500 RPM setpoint. Suddenly a ball is shot and the flywheel dips to 3350 RPM. Which component of the FF+PID controller primarily handles recovering the speed back to 3500 RPM?"
+  options={[
+    "Feedforward — it increases output based on the new velocity",
+    "PID — it detects the error (150 RPM) and adds corrective output",
+    "Both equally — FF and PID split the recovery work 50/50",
+    "Neither — the flywheel recovers on its own due to motor back-EMF"
+  ]}
+  correct={1}
+  explanation="Feedforward only looks at the desired setpoint, not the actual measurement. When the setpoint is still 3500 RPM, the FF output is unchanged. The error (150 RPM) is entirely visible to the PID term, which increases its output to recover the lost speed. This is exactly the division of labor: FF handles steady-state requirements, PID handles disturbances."
+/>
+
+## What's next
+
+So far every controller has been given a target and told to reach it as fast as possible. But commanding a sudden jump in setpoint — from 0 to 60 degrees on an arm, for example — is physically harsh: the motor commands full power, the arm slams up, and the abrupt deceleration at the target stresses gears and structure. The next lesson introduces motion profiling: instead of commanding a step-change, you plan a smooth trajectory that respects the mechanism's physical limits on velocity and acceleration.

@@ -1,0 +1,377 @@
+---
+track: software-engineering
+lesson: 6
+title: Logging Best Practices
+prereqs: [software-engineering-02]
+objectives:
+  - List what data is worth logging (setpoints, measurements, states, events) and why trivial or overly frequent data is harmful
+  - Distinguish between SmartDashboard (live tuning), DataLog (post-match analysis), and AdvantageKit (deterministic replay)
+  - Organize NetworkTables keys into consistent namespaces to prevent dashboard noise
+  - Use log data to diagnose a post-match failure by identifying the sequence of events that led to it
+---
+
+import Key from '../../../components/Key.astro';
+import Try from '../../../components/Try.astro';
+import Note from '../../../components/Note.astro';
+import Warn from '../../../components/Warn.astro';
+import Quiz from '../../../components/demos/Quiz.jsx';
+import CodeEditor from '../../../components/demos/CodeEditor.jsx';
+
+## Hook
+
+Match 4 at regionals. The robot scored five game pieces in practice but only two in the match. The arm stopped moving at some point — you could see it on the field — but by the time you got back to the pit, everything looked normal. You deploy the same code, test it, and it works perfectly.
+
+Was it a CAN timeout? Did the arm hit a soft limit you didn't know about? Did a command get cancelled by a trigger you forgot about? Did the battery sag and the motor controller brownout?
+
+If you had logs, you'd know in two minutes. Without them, you're guessing.
+
+## Core concept
+
+<Key>
+Logging creates a time-stamped record of robot state during a match. Log setpoints, measurements, active commands, and significant events. Avoid logging too frequently or trivialy — it degrades performance and buries useful data. Use SmartDashboard for live tuning, DataLog for post-match analysis, and AdvantageKit for full deterministic replay.
+</Key>
+
+## What to log
+
+Think in terms of "what would I need to know to understand what the robot did?"
+
+### Always log
+- **Setpoints** — what the code is trying to achieve (`Arm/targetDegrees`, `Shooter/targetRPM`).
+- **Measurements** — what sensors actually read (`Arm/angleDegrees`, `Shooter/actualRPM`).
+- **States** — what mode/state the subsystem is in (`Intake/state: INTAKING`).
+- **Significant events** — when a command starts, ends, or is interrupted.
+- **Errors and warnings** — motor controller faults, CAN errors, sensor dropouts.
+
+### Log conditionally
+- **PID internals** (P, I, D, F terms) — log during tuning, consider removing for competition to reduce overhead.
+- **Raw sensor values** — useful when calibrating; less so when the derived value is enough.
+- **Motor temperatures** — log every second, not every 20 ms.
+
+### Don't log
+- **Unchanged values every loop** — if `arm.targetDegrees` hasn't changed in 2 seconds, you don't need 100 identical log entries.
+- **Trivially derived values** — if you log `angle` and `target`, you don't also need to log `error = target - angle` (the viewer can compute it).
+- **System.out.println in production** — it writes to the console buffer, which fills up and affects timing.
+
+## SmartDashboard vs DataLog vs AdvantageKit
+
+### SmartDashboard / NetworkTables
+
+NetworkTables sends data live over the network to Shuffleboard or Glass. Ideal for:
+- Watching PID values in real time while tuning.
+- Displaying match-critical status (arm angle, flywheel speed, piece count).
+- Accepting dashboard inputs (tunable gains, mode toggles).
+
+```java
+@Override
+public void periodic() {
+    SmartDashboard.putNumber("Arm/angleDeg",   io.getAngleDegrees());
+    SmartDashboard.putNumber("Arm/targetDeg",  targetAngleDegrees);
+    SmartDashboard.putBoolean("Arm/atTarget",  atTarget());
+    SmartDashboard.putString("Arm/state",      state.name());
+}
+```
+
+**Limitation:** NetworkTables data is not saved automatically. When the match ends, it's gone. Don't rely on it for post-match debugging.
+
+### DataLog (WPILib built-in)
+
+`DataLogManager` writes to a `.wpilog` file on the roboRIO's filesystem. It survives the match and can be opened in AdvantageScope.
+
+```java
+// In Robot.java robotInit() — start logging
+DataLogManager.start();
+// Optionally log DS and system data automatically
+DriverStation.startDataLog(DataLogManager.getLog());
+
+// In a Subsystem — log structured data
+private final DoubleLogEntry angleLog;
+private final DoubleLogEntry targetLog;
+
+public ArmSubsystem(ArmIO io) {
+    this.io = io;
+    // Create named log entries once
+    angleLog  = new DoubleLogEntry(DataLogManager.getLog(), "/arm/angleDeg");
+    targetLog = new DoubleLogEntry(DataLogManager.getLog(), "/arm/targetDeg");
+}
+
+@Override
+public void periodic() {
+    angleLog.append(io.getAngleDegrees());
+    targetLog.append(targetAngleDegrees);
+    // Also push to SmartDashboard for live view
+    SmartDashboard.putNumber("Arm/angleDeg", io.getAngleDegrees());
+}
+```
+
+Log files accumulate on the roboRIO. Retrieve them via USB or the WPILib log downloader tool in AdvantageScope.
+
+<Note>
+DataLog is timestamped to the microsecond. When debugging, you can see that the CAN error happened 200 ms before the command was cancelled — the causation becomes obvious.
+</Note>
+
+### AdvantageKit
+
+AdvantageKit is a third-party logging framework from Team 6328. It extends the I/O pattern from Lesson 02 and records every I/O input in a deterministic, replayable log.
+
+The key difference from plain DataLog: with AdvantageKit, you can replay a match log through your code *on a laptop* and re-run the exact robot behavior, changing only the code — not the inputs. This lets you verify a bug fix against the actual competition data.
+
+```java
+// AdvantageKit I/O record pattern
+@AutoLog
+public static class ArmIOInputs {
+    public double angleDegrees = 0.0;
+    public double velocityDegreesPerSec = 0.0;
+    public double appliedVolts = 0.0;
+    public double currentAmps = 0.0;
+    public boolean limitSwitchTripped = false;
+}
+
+public class ArmSubsystem extends SubsystemBase {
+    private final ArmIO io;
+    private final ArmIOInputsAutoLogged inputs = new ArmIOInputsAutoLogged();
+
+    @Override
+    public void periodic() {
+        io.updateInputs(inputs);   // reads all hardware once
+        Logger.processInputs("Arm", inputs);  // logs all fields atomically
+    }
+}
+```
+
+AdvantageKit is a full framework adoption — it's not something you add mid-season. For teams starting fresh, it's worth learning. For teams mid-season, plain DataLog covers 90% of the use cases.
+
+## Log levels
+
+Not every message has the same urgency. Use a consistent convention:
+
+| Level | When to use | Example |
+|---|---|---|
+| **INFO** | Normal events worth recording | `"Arm reached scoring position"` |
+| **WARNING** | Something unexpected but recoverable | `"CAN timeout on motor 3, retrying"` |
+| **ERROR** | Something failed that needs attention | `"Encoder returned NaN — arm disabled"` |
+| **DEBUG** | Verbose detail for active debugging | `"PID output: P=0.4, I=0.02, D=0.1"` |
+
+WPILib doesn't have a built-in log level system, but you can implement one trivially:
+
+```java
+public class RobotLog {
+    public static void info(String subsystem, String msg) {
+        DataLogManager.log("[INFO] [" + subsystem + "] " + msg);
+    }
+    public static void warn(String subsystem, String msg) {
+        DataLogManager.log("[WARN] [" + subsystem + "] " + msg);
+        DriverStation.reportWarning("[" + subsystem + "] " + msg, false);
+    }
+    public static void error(String subsystem, String msg) {
+        DataLogManager.log("[ERROR] [" + subsystem + "] " + msg);
+        DriverStation.reportError("[" + subsystem + "] " + msg, false);
+    }
+}
+```
+
+Usage:
+
+```java
+if (Double.isNaN(io.getAngleDegrees())) {
+    RobotLog.error("Arm", "Encoder returned NaN — disabling arm output");
+    disabled = true;
+    return;
+}
+```
+
+## Organizing NetworkTables namespaces
+
+Without namespaces, Shuffleboard becomes a wall of disconnected numbers. Use a consistent hierarchy:
+
+```
+/Subsystem/field
+```
+
+Examples:
+
+```java
+// Arm subsystem
+SmartDashboard.putNumber("Arm/angleDeg",   angle);
+SmartDashboard.putNumber("Arm/targetDeg",  target);
+SmartDashboard.putBoolean("Arm/atTarget",  atTarget);
+SmartDashboard.putNumber("Arm/motorVolts", appliedVolts);
+SmartDashboard.putString("Arm/state",      state.name());
+
+// Shooter subsystem
+SmartDashboard.putNumber("Shooter/rpm",       actualRPM);
+SmartDashboard.putNumber("Shooter/targetRpm", targetRPM);
+SmartDashboard.putBoolean("Shooter/ready",    atSetpoint);
+
+// Drive subsystem
+SmartDashboard.putNumber("Drive/leftMeters",  leftEncoder);
+SmartDashboard.putNumber("Drive/rightMeters", rightEncoder);
+SmartDashboard.putNumber("Drive/headingDeg",  gyro.getAngle());
+```
+
+This groups all arm data under the "Arm" tab in Shuffleboard automatically.
+
+<Warn>
+Never use generic names like `SmartDashboard.putNumber("speed", ...)`. After three weeks of development, you'll have four different "speed" values and no idea which subsystem they belong to.
+</Warn>
+
+## Using logs to debug post-match failures
+
+Here's the workflow when the robot misbehaves in a match:
+
+1. **Download the log file** from the roboRIO using AdvantageScope or WPILib's log downloader.
+2. **Find the timestamp** of the failure. The match time is logged — find the 30-second mark if the problem happened at 30 seconds.
+3. **Check the state fields** around that timestamp. Was the arm moving? Was a command active? Was a sensor reading reasonable?
+4. **Look backwards** from the failure. What changed 200 ms before? Was there a CAN error? Did a voltage reading spike?
+5. **Check the event log.** DataLogManager records DS state (enabled/disabled, brownout), FMS messages, and any `reportWarning/reportError` calls.
+
+A typical debug session:
+
+```
+T=32.1s: Arm/state = MOVING_TO_SCORE
+T=32.4s: Drive/batteryVoltage = 10.2V  ← voltage sag
+T=32.5s: CAN timeout on device 3       ← motor controller disconnected
+T=32.5s: Arm/state = IDLE              ← command was cancelled
+T=32.6s: RobotLog: [WARN] CAN error on arm motor
+```
+
+Without logs: "the arm stopped and we don't know why."
+With logs: "the arm lost CAN communication due to a voltage sag at T=32.4s. Check the motor wiring near the battery."
+
+## Key takeaways
+
+- Log setpoints, measurements, states, and events. Avoid trivial, unchanged, or derived values.
+- SmartDashboard is for live dashboard display. DataLog is for post-match analysis.
+- AdvantageKit enables full deterministic replay — match inputs can be re-run through updated code on a laptop.
+- Use `/Subsystem/field` namespaces consistently. Shuffleboard groups them automatically.
+- Log errors to `DriverStation.reportError()` so they appear in the DS log, not just the robot log.
+- Post-match debugging: find the timestamp, read backwards from the failure, look for causal events.
+
+## Common confusions
+
+**"My DataLog file is empty."** You didn't call `DataLogManager.start()` in `robotInit()`. Add it before any log entry creation.
+
+**"My Shuffleboard is a mess of random values."** You used inconsistent key names. Rename everything to `/Subsystem/field` format. Shuffleboard auto-groups by the first path segment.
+
+**"AdvantageKit seems too complicated."** Start with plain DataLog + AdvantageScope. AdvantageKit is a full architecture choice — it's worth learning but not required to get 90% of the logging benefit.
+
+**"I added logging but the robot loop is slower now."** You're logging too much per tick. Log at reduced frequency for non-critical values: only log motor temperature every 50 loops (1 second), not every 20 ms.
+
+## Challenge
+
+<Try>
+Your arm subsystem's `periodic()` method logs angle and target every loop. After a match, you download the log and see: the angle was at 45° and the target was 120°, but the arm never moved. Voltage was normal. No CAN errors.
+
+What additional fields should you have been logging to diagnose this? List at least three. What is the most likely cause given the information available, and what log entry would confirm it?
+</Try>
+
+<CodeEditor
+  client:load
+  starterCode={`// Simulate a logging system that records timestamped entries.
+// Build a simple logger, log subsystem state at each "tick",
+// then diagnose a problem by reading the log.
+
+import java.util.ArrayList;
+import java.util.List;
+
+class LogEntry {
+    int tick;
+    String key;
+    String value;
+    LogEntry(int tick, String key, String value) {
+        this.tick = tick;
+        this.key = key;
+        this.value = value;
+    }
+    @Override
+    public String toString() {
+        return "T=" + tick + " [" + key + "] " + value;
+    }
+}
+
+class SimpleLogger {
+    private final List<LogEntry> entries = new ArrayList<>();
+
+    public void log(int tick, String key, String value) {
+        entries.add(new LogEntry(tick, key, value));
+    }
+
+    public void log(int tick, String key, double value) {
+        log(tick, key, String.format("%.2f", value));
+    }
+
+    // Print all entries for a key after a given tick
+    public void dump(String key, int fromTick) {
+        for (LogEntry e : entries) {
+            if (e.key.equals(key) && e.tick >= fromTick) {
+                System.out.println(e);
+            }
+        }
+    }
+
+    // Find first tick where a key's value matches
+    public int findFirst(String key, String value) {
+        for (LogEntry e : entries) {
+            if (e.key.equals(key) && e.value.equals(value)) return e.tick;
+        }
+        return -1;
+    }
+}
+
+public class LoggingDemo {
+    public static void main(String[] args) {
+        SimpleLogger log = new SimpleLogger();
+
+        // Simulate 10 ticks of "normal" arm operation
+        double angle = 45.0;
+        double target = 45.0;
+        String commandState = "IDLE";
+
+        for (int tick = 1; tick <= 5; tick++) {
+            log.log(tick, "Arm/angleDeg", angle);
+            log.log(tick, "Arm/targetDeg", target);
+            log.log(tick, "Arm/commandState", commandState);
+        }
+
+        // At tick 6, driver presses button — command starts
+        target = 120.0;
+        commandState = "MOVING";
+        for (int tick = 6; tick <= 7; tick++) {
+            log.log(tick, "Arm/angleDeg", angle); // arm not moving yet
+            log.log(tick, "Arm/targetDeg", target);
+            log.log(tick, "Arm/commandState", commandState);
+        }
+
+        // At tick 8, CAN error — command is cancelled
+        log.log(8, "Arm/CANError", "true");
+        commandState = "IDLE";
+        for (int tick = 8; tick <= 10; tick++) {
+            log.log(tick, "Arm/angleDeg", angle);
+            log.log(tick, "Arm/targetDeg", target); // target still 120 but idle
+            log.log(tick, "Arm/commandState", commandState);
+        }
+
+        // TODO: Use log.dump() and log.findFirst() to answer:
+        // 1. Print all Arm/commandState entries from tick 5 onward
+        // 2. Find the first tick where a CAN error was logged
+        // 3. Print what the arm angle was at that tick
+        System.out.println("--- commandState from tick 5 ---");
+        // your code here
+
+        System.out.println("--- CAN error tick ---");
+        // your code here
+
+        System.out.println("--- arm angle at CAN error tick ---");
+        // your code here
+    }
+}`}
+  testCases={[
+    { label: "commandState log starts with IDLE", expected: "T=5 [Arm/commandState] IDLE" },
+    { label: "CAN error at tick 8", expected: "T=8 [Arm/CANError] true" },
+    { label: "arm angle at tick 8 is 45.00", expected: "T=8 [Arm/angleDeg] 45.00" },
+  ]}
+  hint="1: log.dump('Arm/commandState', 5). 2: int errTick = log.findFirst('Arm/CANError', 'true'); System.out.println('T=' + errTick). 3: log.dump('Arm/angleDeg', errTick) but only for tick == errTick — or just call log.dump and look at the right line."
+/>
+
+## What's next
+
+In **Software Engineering Lesson 07**, we'll cover Git for Robot Code — branching strategy for FRC teams, tagging competition builds, handling merge conflicts in robot code, and recovering from bad deploys before they cost you a match.
