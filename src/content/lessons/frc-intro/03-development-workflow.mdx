@@ -1,0 +1,251 @@
+---
+track: frc-intro
+lesson: 3
+title: Development Workflow
+prereqs: [frc-intro-02]
+objectives:
+  - Install the WPILib VS Code extension and create a new robot project
+  - Deploy a robot program to the roboRIO using the WPILib tools
+  - Describe the role of each major file in a WPILib Gradle project
+  - Use FRC Driver Station to enable and monitor a robot
+  - Commit robot code to Git and explain why version control matters for a competition team
+---
+
+import Key from '../../../components/Key.astro';
+import Try from '../../../components/Try.astro';
+import Note from '../../../components/Note.astro';
+import Warn from '../../../components/Warn.astro';
+import Quiz from '../../../components/demos/Quiz.jsx';
+
+## Hook
+
+It's 10pm the night before your first regional. You changed one line in the autonomous routine — just the drive distance — and now the robot won't even enable. The previous version worked perfectly.
+
+If your team has been using Git, you run `git diff` and immediately see the bad line. You revert it in 30 seconds.
+
+If your team hasn't been using Git, you spend the next hour hunting through code trying to remember what you changed.
+
+Every professional software team uses version control. FRC teams that take programming seriously do too. Before you write a single line of robot code, you need your tools set up and your workflow established.
+
+## The WPILib tool suite
+
+WPILib ships as a bundled installer that includes everything you need:
+
+- **VS Code** — the editor, pre-configured for FRC development
+- **WPILib VS Code Extension** — adds FRC-specific commands, project templates, and a build system wrapper
+- **Java Development Kit (JDK 17)** — the compiler that turns your Java into bytecode the roboRIO can run
+- **Gradle** — the build tool that compiles your code and packages it for deployment
+- **Simulation support** — lets you run robot code on your laptop without hardware
+
+<Key>
+The WPILib installer sets up a completely self-contained toolchain. You don't need to install Java or Gradle separately — everything lives inside the WPILib folder at `~/wpilib/YYYY`.
+</Key>
+
+### Installing WPILib
+
+1. Download the installer from [docs.wpilib.org](https://docs.wpilib.org) — pick the version matching the current FRC season year.
+2. Run the installer. On Windows, it installs to `C:\Users\Public\wpilib\YYYY`. On macOS/Linux, to `~/wpilib/YYYY`.
+3. Launch **WPILib VS Code** — not the system VS Code. The shortcut on your desktop points to the bundled version with the FRC extension already installed.
+
+<Note>
+Always use the WPILib VS Code, not a separately installed VS Code. The extension requires the specific JDK version bundled by WPILib. Mixing versions causes cryptic build errors.
+</Note>
+
+## Creating a new robot project
+
+Once VS Code is open, press `Ctrl+Shift+P` (or `Cmd+Shift+P` on macOS) to open the command palette. Type `WPILib` — you'll see a list of FRC-specific commands appear. Select **WPILib: Create a new project**.
+
+The project creator asks you:
+
+| Field | What to choose |
+|---|---|
+| **Project type** | Template |
+| **Language** | Java |
+| **Base class** | Timed Robot |
+| **Team number** | Your team's 4-digit number |
+| **Project name** | Something descriptive, e.g. `robot-2026` |
+| **Desktop support** | Enable it — lets you simulate without hardware |
+
+Click **Generate Project**. VS Code opens your new project folder.
+
+### What just got created?
+
+```
+robot-2026/
+├── .wpilib/
+│   └── wpilib_preferences.json    ← team number, deploy target
+├── src/main/java/frc/robot/
+│   ├── Main.java                  ← entry point, don't touch this
+│   └── Robot.java                 ← your robot class (extends TimedRobot)
+├── build.gradle                   ← Gradle build config, dependencies go here
+├── gradlew                        ← Gradle wrapper script (use this, not system gradle)
+└── vendordeps/                    ← JSON files for vendor libraries (REVLib, Phoenix)
+```
+
+**`Robot.java`** is where you'll work most of the time. It extends `TimedRobot`, which gives you lifecycle methods like `robotInit()`, `teleopPeriodic()`, and `autonomousPeriodic()`.
+
+**`build.gradle`** declares what libraries your project depends on. When you add a vendor library (like REVLib for SPARK MAX), it adds a line here.
+
+**`vendordeps/`** contains JSON files that describe third-party libraries. To add REVLib, you'd run **WPILib: Manage Vendor Libraries** from the command palette and install the REVLib JSON — Gradle then downloads the actual code automatically.
+
+<Note>
+Never manually download JAR files and drag them into your project. Always use **Manage Vendor Libraries** so Gradle tracks the dependency. This ensures every computer on your team gets the same version.
+</Note>
+
+## Building your project
+
+Press `Ctrl+Shift+P` → **WPILib: Build Robot Code** (or just press `Shift+F5`). Gradle compiles your Java source and reports any errors in the terminal.
+
+You'll see something like:
+
+```
+> Task :compileJava
+> Task :jar
+> Task :assemble
+
+BUILD SUCCESSFUL in 4s
+```
+
+If there are errors, VS Code highlights the offending lines. Fix them before trying to deploy.
+
+<Warn>
+Always build before deploying. A deploy with compile errors will either fail outright or deploy a stale binary from the last successful build — which can be very confusing to debug.
+</Warn>
+
+## Deploying to the roboRIO
+
+Deploying copies your compiled code to the roboRIO and restarts the robot program. You need:
+
+1. The robot powered on
+2. Your laptop connected to the robot's radio (over WiFi) or directly via USB/Ethernet tether
+
+Then press `Ctrl+Shift+P` → **WPILib: Deploy Robot Code** (or `Shift+F6`).
+
+The deploy output looks like:
+
+```
+> Task :deployDebug
+Deploying to roboRIO...
+Building robot project on roboRIO...
+Killed stale robot program
+Starting robot program
+SUCCESS
+```
+
+If deploy fails with "no robot connection," check:
+- Is the robot radio powered?
+- Are you on the robot's WiFi network (named `YYYY_TEAM` for your team number)?
+- If tethered over USB-B, is the roboRIO imaging driver installed?
+
+<Key>
+The roboRIO runs Linux. When you deploy, Gradle uses SSH to copy the compiled JAR file to the roboRIO's filesystem, then sends a command to restart the robot program. The roboRIO's WPILib runtime loads your code and starts calling your lifecycle methods.
+</Key>
+
+## FRC Driver Station
+
+The **FRC Driver Station** application (Windows only) is the bridge between your laptop and the robot during matches. It must be running and connected for the robot to enable.
+
+### What Driver Station does
+
+- **Enables/disables the robot** — without an enable signal, motor outputs are locked to zero, no matter what your code says. This is a hardware safety feature.
+- **Sets the robot mode** — Teleop, Autonomous, Practice, or Test. Your robot code receives this mode and calls the corresponding methods.
+- **Passes joystick data** — USB joysticks plugged into the Driver Station laptop are read by the app and sent to the roboRIO over the network every 20ms.
+- **Shows robot status** — battery voltage, CPU usage, loop timing, and any fault messages your code sends.
+
+### Driver Station tabs
+
+| Tab | What it's for |
+|---|---|
+| **Operation** | Enable/disable, mode select, match timer |
+| **Diagnostics** | Robot connection health, comms latency |
+| **USB Devices** | View and re-order connected joysticks |
+| **Messages** | Robot console output (`System.err.println` shows up here) |
+
+<Note>
+In FRC matches, the field's **FMS (Field Management System)** takes control of Driver Station. It handles enable/disable timing automatically. During practice, you control it yourself.
+</Note>
+
+### Testing without a full field
+
+During development, connect the Driver Station directly to the robot radio. Enable in **Teleop** mode. Your `teleopPeriodic()` will start running 50 times per second. You can drive, test mechanisms, and watch the console output in the Messages tab.
+
+<Warn>
+Always make sure the robot has a clear path to move before enabling. Enabling with a mechanism in an unexpected position or with a wheel against a wall can damage hardware instantly.
+</Warn>
+
+## Git basics for robot code
+
+### Why Git matters for FRC
+
+FRC teams often have multiple programmers working on the same codebase. Without Git:
+- Two people edit the same file, one overwrites the other's work
+- A last-minute fix breaks something; you can't find the original version
+- You can't tell when a bug was introduced
+
+With Git, every change is a snapshot. You can go back to any point in history.
+
+### Setting up a repository
+
+If your project doesn't already have a Git repo, run this once in the terminal:
+
+```bash
+cd robot-2026
+git init
+git add .
+git commit -m "Initial project from WPILib template"
+```
+
+### The daily workflow
+
+```bash
+# See what you've changed
+git status
+git diff
+
+# Stage specific files you want to commit
+git add src/main/java/frc/robot/Robot.java
+
+# Commit with a meaningful message
+git commit -m "Add arm motor to teleopPeriodic"
+
+# Push to your team's remote (GitHub, GitLab, etc.)
+git push
+```
+
+**Write meaningful commit messages.** "Fixed stuff" tells your teammate nothing. "Clamp shooter motor output to 0.8 to prevent breaker trip" tells them exactly what changed and why.
+
+### Branching for competition
+
+A common FRC branching strategy:
+
+```
+main        ← stable, competition-ready code only
+└── feature/shooter-tuning   ← experimental changes
+└── feature/auto-3-piece      ← new autonomous routine
+```
+
+Never push untested code directly to `main` before a competition. Work in a feature branch, test it, then merge when it's ready.
+
+<Try>
+Create a new WPILib project. Initialize a Git repository. Make one small change to `Robot.java` (add a comment). Commit the change with a descriptive message. Then run `git log` to see your commit history.
+</Try>
+
+## Key takeaways
+
+- The WPILib installer provides a self-contained toolchain — use the bundled VS Code, not your system installation.
+- A new WPILib project contains `Robot.java` (your entry point), `build.gradle` (dependencies), and `vendordeps/` (vendor library manifests).
+- Deploying uses Gradle + SSH to copy your compiled code to the roboRIO; the robot must be powered and network-connected.
+- Driver Station controls robot enable/disable and mode — the robot cannot move without it.
+- Git version control is essential for teams; commit working code frequently with descriptive messages.
+
+## Common confusions
+
+**"I deployed but the robot is still running old code."** Check the deploy output for errors. If the build failed silently, the previous JAR is still on the roboRIO. Make sure the build succeeds before concluding deploy is broken.
+
+**"Driver Station says 'No Robot Communication'."** You're not on the robot's network. Check that your laptop is connected to the robot's WiFi or tether. Also check that the roboRIO's status light is solid green (fully booted).
+
+**"I added REVLib but my `CANSparkMax` imports don't resolve."** Make sure you ran **Manage Vendor Libraries** and installed the REVLib JSON, not just downloaded a JAR. After adding vendor deps, run a fresh build.
+
+## What's next
+
+In **Lesson 4**, we'll write your first actual robot program — reading a joystick axis and sending that value to a motor controller using the `TimedRobot` lifecycle methods.

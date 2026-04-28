@@ -1,0 +1,397 @@
+---
+track: fundamentals
+lesson: 13
+title: Error Handling
+prereqs: [fundamentals-12]
+objectives:
+  - Explain what an exception is and identify common types by their names
+  - Write a try/catch block that recovers gracefully from a runtime error
+  - Distinguish between preventing an error with defensive code and catching it after it occurs
+  - Apply null checks and bounds checks to FRC sensor and config reading code
+  - Decide when catching an exception is appropriate vs. when it masks a real bug
+---
+
+import Key from '../../../components/Key.astro';
+import Try from '../../../components/Try.astro';
+import Note from '../../../components/Note.astro';
+import Warn from '../../../components/Warn.astro';
+import CodeTrace from '../../../components/demos/CodeTrace.jsx';
+import Quiz from '../../../components/demos/Quiz.jsx';
+import CodeEditor from '../../../components/demos/CodeEditor.jsx';
+
+## Hook
+
+It's autonomous. Your robot is lined up perfectly. Three seconds in — the Driver Station goes red. `NullPointerException` in `DriveSubsystem.java`, line 47.
+
+The robot sits still for the rest of the match.
+
+A null sensor object. One missing initialization line. The exception crashed the entire robot program.
+
+Exceptions are Java's way of saying "something went so wrong I can't continue." Understanding them — what causes them, how to catch them, and better yet how to prevent them — is the difference between a robot that fails gracefully and one that parks itself mid-field.
+
+## Core concept
+
+<Key>
+An **exception** is a runtime event that interrupts normal program flow when something unexpected happens — a null reference, an out-of-bounds index, an illegal argument. Java lets you **catch** exceptions to recover or log them, but the better strategy is usually **defensive coding**: checking for bad conditions before they cause a crash.
+</Key>
+
+## Walk-through: What exceptions are
+
+### Exceptions are objects
+
+When Java encounters a problem it can't handle, it creates an exception object and **throws** it. Execution stops at that line and Java unwinds the call stack looking for a handler. If it doesn't find one, the program terminates.
+
+Every exception is an object that extends `Throwable`. The ones you'll encounter most on an FRC robot:
+
+| Exception | Cause |
+|-----------|-------|
+| `NullPointerException` | Calling a method on a variable that is `null` |
+| `ArrayIndexOutOfBoundsException` | Accessing an array at an index that doesn't exist |
+| `IllegalArgumentException` | Passing a value a method refuses to accept |
+| `ClassCastException` | Casting an object to a type it isn't |
+| `NumberFormatException` | Parsing a string that isn't a valid number |
+| `StackOverflowError` | Infinite recursion (technically an Error, not Exception) |
+
+### NullPointerException in detail
+
+`null` means "no object here." If you call any method on `null`, Java throws `NullPointerException`:
+
+```java
+String name = null;
+int length = name.length();   // NullPointerException — name is null
+```
+
+In FRC this often happens when a sensor object wasn't initialized:
+
+```java
+// RobotContainer.java
+private ColorSensor colorSensor;   // declared but never assigned — stays null
+
+// Later:
+String color = colorSensor.getColor();  // NullPointerException at runtime
+```
+
+### ArrayIndexOutOfBoundsException in detail
+
+Arrays have a fixed size. Valid indices are `0` through `length - 1`. Anything else throws:
+
+```java
+int[] speeds = {10, 20, 30};
+System.out.println(speeds[3]);   // ArrayIndexOutOfBoundsException — only indices 0,1,2 exist
+```
+
+In FRC you might see this when reading a fixed-size array from a sensor API and accidentally requesting index 4 on a 4-element array (valid range: 0–3).
+
+### IllegalArgumentException in detail
+
+Methods can throw this to reject values they can't work with:
+
+```java
+public void setSpeed(double speed) {
+    if (speed < -1.0 || speed > 1.0) {
+        throw new IllegalArgumentException("Speed must be between -1 and 1, got: " + speed);
+    }
+    motor.set(speed);
+}
+```
+
+WPILib throws `IllegalArgumentException` in several places — for example, if you try to register two subsystems with the same name.
+
+---
+
+## Walk-through: try/catch
+
+### Basic syntax
+
+```java
+try {
+    // code that might throw
+    int result = Integer.parseInt(userInput);
+    System.out.println("Parsed: " + result);
+} catch (NumberFormatException e) {
+    // runs only if parsing fails
+    System.out.println("Bad input: " + userInput + " — defaulting to 0");
+}
+```
+
+- The `try` block runs normally.
+- If an exception of the specified type is thrown anywhere inside `try`, execution jumps immediately to the matching `catch` block.
+- If no exception is thrown, `catch` is skipped entirely.
+- Execution continues after the `catch` block either way.
+
+### Catching multiple types
+
+```java
+try {
+    String raw = config.getString("armTarget");
+    double target = Double.parseDouble(raw);
+    setArmTarget(target);
+} catch (NullPointerException e) {
+    System.out.println("Config key 'armTarget' not found, using default.");
+    setArmTarget(90.0);
+} catch (NumberFormatException e) {
+    System.out.println("Config value isn't a number: " + e.getMessage());
+    setArmTarget(90.0);
+}
+```
+
+Each `catch` clause handles a specific exception type. Java matches the first one that fits and skips the rest.
+
+### The `finally` block
+
+Code in `finally` runs whether or not an exception was thrown — useful for releasing resources:
+
+```java
+FileWriter log = null;
+try {
+    log = new FileWriter("robot_log.txt");
+    log.write("Match started");
+} catch (IOException e) {
+    System.out.println("Could not write log: " + e.getMessage());
+} finally {
+    if (log != null) {
+        try { log.close(); } catch (IOException ignored) {}
+    }
+}
+```
+
+In FRC robot code you'll rarely need `finally`, but you'll see it in file-logging and network utilities.
+
+### Getting information from an exception
+
+```java
+} catch (IllegalArgumentException e) {
+    System.out.println("Error: " + e.getMessage());
+    e.printStackTrace();   // prints the full call stack to the console — useful for debugging
+}
+```
+
+`e.getMessage()` returns the description string. `e.printStackTrace()` dumps the full call stack — very useful when debugging, but noisy in production.
+
+<Note>
+In WPILib projects, `DriverStation.reportError(message, true)` is preferred over `e.printStackTrace()` because it routes the message to the Driver Station console and the log file simultaneously.
+</Note>
+
+---
+
+## Walk-through: Defensive coding
+
+Catching exceptions is the last resort. The better strategy is to **prevent** the problem before it can occur.
+
+### Null checks
+
+Before calling any method on an object that might be null, check first:
+
+```java
+// Risky:
+String color = colorSensor.getColor();
+
+// Safe:
+if (colorSensor != null) {
+    String color = colorSensor.getColor();
+} else {
+    System.out.println("Color sensor not available, skipping.");
+}
+```
+
+Pattern: assign a safe default if the real value is absent.
+
+```java
+private double readSensorAngle() {
+    if (encoder == null) {
+        return 0.0;   // safe default — won't crash the loop
+    }
+    return encoder.getAngle();
+}
+```
+
+### Bounds checks
+
+Before indexing an array or list, verify the index is in range:
+
+```java
+public double getAutoSpeed(int step) {
+    if (step < 0 || step >= autoSpeeds.length) {
+        System.out.println("Step " + step + " out of range.");
+        return 0.0;
+    }
+    return autoSpeeds[step];
+}
+```
+
+### Validating inputs before use
+
+```java
+public void setArmDegrees(double degrees) {
+    if (degrees < 0 || degrees > 180) {
+        System.out.println("Arm target " + degrees + " out of range. Clamping.");
+        degrees = Math.max(0, Math.min(180, degrees));
+    }
+    armPID.setSetpoint(degrees);
+}
+```
+
+### Safe config reading in FRC
+
+Robots often read configuration from files or `Preferences`. Those values might be missing or malformed:
+
+```java
+import edu.wpi.first.wpilibj.Preferences;
+
+public double readArmTarget() {
+    // Preferences.getDouble returns a default value if the key doesn't exist —
+    // no try/catch needed because the API is designed defensively.
+    return Preferences.getDouble("armTarget", 90.0);
+}
+```
+
+When an API already handles the missing-value case, let it. Only reach for try/catch when the API forces you to deal with exceptions directly.
+
+---
+
+## When to catch vs. when to prevent
+
+| Scenario | Preferred approach |
+|----------|--------------------|
+| Sensor not initialized | Null check at construction / initialization |
+| Array index from user input or config | Bounds check before access |
+| Parsing a config string that should be a number | `try/catch NumberFormatException` with a logged default |
+| WPILib API that throws if arguments are wrong | Fix the argument — don't catch and swallow |
+| Network/file operation that might fail (logging, dashboard) | `try/catch` — failure shouldn't crash the robot |
+| A bug you haven't found yet | Don't catch — let it crash so you see the problem |
+
+<Warn>
+Never write `catch (Exception e) {}` with an empty body. This silently swallows every exception — including bugs you need to know about. Always log or handle the exception in a meaningful way.
+</Warn>
+
+---
+
+## Interactive trace
+
+<CodeTrace
+  client:load
+  variables={{ input: "\"90\"", parsed: 0, target: 0, error: "none" }}
+  steps={[
+    {
+      code: "String input = \"90\";",
+      state: { input: "\"90\"", parsed: 0, target: 0, error: "none" },
+      comment: "normal string from config"
+    },
+    {
+      code: "parsed = Integer.parseInt(input);",
+      state: { input: "\"90\"", parsed: 90, target: 0, error: "none" },
+      comment: "succeeds — 90"
+    },
+    {
+      code: "target = parsed;",
+      state: { input: "\"90\"", parsed: 90, target: 90, error: "none" },
+      comment: "target set to 90"
+    },
+    {
+      code: "── new scenario: input = \"ninety\" ──",
+      state: { input: "\"ninety\"", parsed: 0, target: 90, error: "none" },
+      comment: "bad config value"
+    },
+    {
+      code: "parsed = Integer.parseInt(input);",
+      state: { input: "\"ninety\"", parsed: 0, target: 90, error: "NumberFormatException" },
+      comment: "throws! execution jumps to catch"
+    },
+    {
+      code: "catch (NumberFormatException e) { target = 90; }",
+      state: { input: "\"ninety\"", parsed: 0, target: 90, error: "caught" },
+      comment: "recover with default — robot keeps running"
+    }
+  ]}
+/>
+
+---
+
+## Key takeaways
+
+- Exceptions are objects thrown at runtime when something unexpected happens; they halt execution unless caught.
+- The most common exceptions in FRC code are `NullPointerException`, `ArrayIndexOutOfBoundsException`, and `IllegalArgumentException`.
+- `try/catch` lets you recover from an exception: the `catch` block runs only when the matching exception type is thrown.
+- **Defensive coding** — null checks, bounds checks, input validation — is almost always better than catching exceptions.
+- Never swallow exceptions silently. Always log them with a message or a default so you can diagnose problems later.
+- Some API methods (like `Preferences.getDouble`) are already written defensively; use their default-value parameters instead of try/catch.
+
+---
+
+## Common confusions
+
+**"My catch block never runs even though the code throws."**
+
+The exception type in `catch` must match exactly. If the code throws `ArrayIndexOutOfBoundsException` but you catch `NullPointerException`, Java doesn't match it and the program still crashes. Use `catch (Exception e)` temporarily to discover what type is actually being thrown (read `e.getClass().getName()`), then switch to the specific type.
+
+**"I wrapped everything in try/catch and now bugs are disappearing."**
+
+That's the danger of catch-all blocks. If you catch `Exception` and print nothing, errors vanish silently. You'll have mysterious behavior with no stack trace. Always print or log inside every catch block.
+
+**"Should I catch RuntimeException on every periodic() call to prevent crashes?"**
+
+Generally no. Periodic methods run 50 times per second. If something throws every loop, you need to fix the bug, not hide it. The exception to this rule is logging and dashboard code, where a failure should not interrupt robot control.
+
+**"What's the difference between an Exception and an Error?"**
+
+Both extend `Throwable`, but `Error` signals a serious JVM-level problem (like `StackOverflowError` or `OutOfMemoryError`). You should almost never catch an `Error`. `Exception` is what application code throws and catches.
+
+---
+
+## Challenge
+
+<Try>
+Write a method `safeGet(int[] arr, int index)` that returns the element at `index` if the index is valid, or `-1` if it is out of bounds. Test it with an array of five values and several index requests, some valid and some out of range.
+
+Expected output for the test cases below:
+```
+arr[1] = 20
+arr[4] = 50
+arr[5] = -1 (out of bounds)
+arr[-1] = -1 (out of bounds)
+```
+</Try>
+
+<CodeEditor
+  client:load
+  starterCode={`public class Main {
+
+    static int safeGet(int[] arr, int index) {
+        // TODO: check bounds before accessing
+        // Return -1 if index is out of range
+        if (index < 0 || index >= arr.length) {
+            return -1;
+        }
+        return arr[index];
+    }
+
+    public static void main(String[] args) {
+        int[] values = {10, 20, 30, 40, 50};
+
+        int r1 = safeGet(values, 1);
+        System.out.println("arr[1] = " + r1);
+
+        int r2 = safeGet(values, 4);
+        System.out.println("arr[4] = " + r2);
+
+        int r3 = safeGet(values, 5);
+        System.out.println("arr[5] = " + r3 + " (out of bounds)");
+
+        int r4 = safeGet(values, -1);
+        System.out.println("arr[-1] = " + r4 + " (out of bounds)");
+    }
+}`}
+  testCases={[
+    {
+      label: "valid and invalid indices",
+      expected: "arr[1] = 20\narr[4] = 50\narr[5] = -1 (out of bounds)\narr[-1] = -1 (out of bounds)"
+    }
+  ]}
+  hint="Check index >= 0 AND index < arr.length before accessing arr[index]. If either condition fails, return -1 immediately without touching the array."
+/>
+
+---
+
+## What's next
+
+You can now write code that survives unexpected runtime conditions. The next step up in data management is **Lesson 14 — Collections**: dynamic lists and key-value maps that let you store and look up robot data without being stuck with fixed-size arrays.

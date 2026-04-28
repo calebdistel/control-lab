@@ -1,0 +1,313 @@
+---
+track: robot-code
+lesson: 7
+title: Triggers and Bindings
+prereqs: [robot-code-06]
+objectives:
+  - Explain the difference between a Trigger and a raw JoystickButton
+  - Bind commands to controller inputs using onTrue, whileTrue, toggleOnTrue, and onFalse
+  - Create a custom Trigger from any BooleanSupplier
+  - Compose multiple Triggers using and(), or(), and negate()
+---
+
+import Key from '../../../components/Key.astro';
+import Try from '../../../components/Try.astro';
+import Note from '../../../components/Note.astro';
+import Warn from '../../../components/Warn.astro';
+import CodeTrace from '../../../components/demos/CodeTrace.jsx';
+import Quiz from '../../../components/demos/Quiz.jsx';
+import CodeEditor from '../../../components/demos/CodeEditor.jsx';
+
+## Hook
+
+You bind a command to a button. Simple. But then the operator asks: "Can the intake only run when we're not at full extension?" Now you need a button press AND a sensor condition. With raw `JoystickButton`, that logic bleeds into your command. With `Trigger`, you compose it in one line.
+
+`Trigger` is WPILib's answer to the question: "what, precisely, causes a command to start or stop?" Once you understand it, controller bindings become a small, readable table in `RobotContainer` instead of a maze of if-statements scattered across commands.
+
+## Core concept
+
+<Key>
+A Trigger is any boolean condition — a button press, a sensor reading, a calculated state — that can start, stop, or toggle commands. CommandXboxController exposes every button and axis as a ready-made Trigger, and you can build your own from any BooleanSupplier. Triggers are composed and wired in RobotContainer; they never live inside a subsystem or command.
+</Key>
+
+## The Trigger class
+
+`edu.wpi.first.wpilibj2.command.button.Trigger` wraps a single `BooleanSupplier`. The scheduler polls it every loop iteration (every 20 ms) and fires edge-detection events:
+
+| Method | Fires when |
+|---|---|
+| `onTrue(cmd)` | condition transitions **false → true** |
+| `onFalse(cmd)` | condition transitions **true → false** |
+| `whileTrue(cmd)` | schedules while condition is true; cancels on false |
+| `whileFalse(cmd)` | schedules while condition is false; cancels on true |
+| `toggleOnTrue(cmd)` | alternates schedule/cancel each false→true edge |
+| `toggleOnFalse(cmd)` | alternates schedule/cancel each true→false edge |
+
+## CommandXboxController
+
+`edu.wpi.first.wpilibj2.command.button.CommandXboxController` is the command-based wrapper around a standard Xbox controller. Every button is already a `Trigger`:
+
+```java
+private final CommandXboxController driver = new CommandXboxController(0);
+
+// Each of these returns a Trigger object:
+driver.a()             // A button
+driver.b()             // B button
+driver.x()             // X button
+driver.y()             // Y button
+driver.leftBumper()    // Left bumper
+driver.rightBumper()   // Right bumper
+driver.leftTrigger()   // Left trigger axis > 0.5 (default threshold)
+driver.rightTrigger(0.3) // Right trigger axis > 0.3 (custom threshold)
+driver.leftStick()     // Left stick click
+driver.povUp()         // D-pad up
+```
+
+<Note>
+`CommandXboxController` is not the same as `XboxController`. The older `XboxController` returns raw doubles and booleans. `CommandXboxController` returns `Trigger` objects — use this one in command-based projects. We cover axes (for driving) in Lesson 08.
+</Note>
+
+## Binding examples
+
+All bindings live in `RobotContainer.configureBindings()`:
+
+```java
+private void configureBindings() {
+    // Run intake while A is held, stop when released
+    driver.a().whileTrue(new IntakeCommand(intake));
+
+    // Deploy arm once when B is pressed
+    driver.b().onTrue(new ArmToPosition(arm, ArmConstants.kDeployAngle));
+
+    // Retract arm once when B is released
+    driver.b().onFalse(new ArmToPosition(arm, ArmConstants.kStowAngle));
+
+    // Toggle a climber lock on/off with Y
+    driver.y().toggleOnTrue(new LockClimberCommand(climber));
+
+    // Fire shooter only when right trigger is pulled past 30%
+    driver.rightTrigger(0.3).whileTrue(new ShootCommand(shooter));
+}
+```
+
+<Warn>
+`onTrue` schedules a command on the **rising edge only** — one press, one schedule. If you hold the button, the command is not re-scheduled unless it finishes and the button is pressed again. Use `whileTrue` if you want the command to restart when interrupted.
+</Warn>
+
+## Solenoid toggle with toggleOnTrue
+
+A common pattern is toggling a pneumatic solenoid (e.g., a gripper):
+
+```java
+// In RobotContainer
+private final GripperSubsystem gripper = new GripperSubsystem();
+
+private void configureBindings() {
+    // Each press of left bumper flips the gripper state
+    driver.leftBumper().toggleOnTrue(
+        Commands.startEnd(
+            gripper::close,   // runs on schedule
+            gripper::open,    // runs on cancel
+            gripper
+        )
+    );
+}
+```
+
+```java
+// GripperSubsystem.java
+public class GripperSubsystem extends SubsystemBase {
+    private final DoubleSolenoid solenoid =
+        new DoubleSolenoid(PneumaticsModuleType.CTREPCM, 0, 1);
+
+    public void close() {
+        solenoid.set(DoubleSolenoid.Value.kForward);
+    }
+
+    public void open() {
+        solenoid.set(DoubleSolenoid.Value.kReverse);
+    }
+}
+```
+
+## Custom Triggers from BooleanSupplier
+
+Any `BooleanSupplier` can become a `Trigger`. This is powerful: you can trigger commands from sensor readings, calculated state, or any boolean expression.
+
+```java
+// Trigger that fires when the proximity sensor detects a game piece
+Trigger hasPiece = new Trigger(intakeSubsystem::hasPiece);
+hasPiece.onTrue(new RumbleCommand(driver, 0.5, 0.25));  // haptic feedback
+
+// Trigger from a lambda — fires when arm is above 60 degrees
+Trigger armHigh = new Trigger(() -> arm.getAngle() > 60.0);
+armHigh.whileTrue(new ExtendClimber(climber));
+
+// Trigger from a NetworkTables entry (e.g., vision target locked)
+Trigger targetLocked = new Trigger(() ->
+    SmartDashboard.getBoolean("Vision/targetLocked", false));
+targetLocked.whileTrue(new AutoAim(shooter, vision));
+```
+
+## Composing Triggers
+
+Triggers support boolean composition via `and()`, `or()`, and `negate()`. Each returns a new `Trigger`.
+
+```java
+// Button AND sensor condition
+Trigger canShoot = driver.rightBumper().and(shooter::isUpToSpeed);
+canShoot.whileTrue(new FeedCommand(feeder));
+
+// Either left OR right bumper runs the intake
+Trigger eitherBumper = driver.leftBumper().or(driver.rightBumper());
+eitherBumper.whileTrue(new IntakeCommand(intake));
+
+// Run reverse intake when B is held but A is NOT also held
+Trigger reverseOnly = driver.b().and(driver.a().negate());
+reverseOnly.whileTrue(new ReverseIntakeCommand(intake));
+```
+
+<Note>
+Composition creates a new `Trigger` at construction time — no runtime overhead. The scheduler polls the composed supplier just like any other trigger.
+</Note>
+
+## Full RobotContainer example
+
+```java
+public class RobotContainer {
+    private final DriveSubsystem drive = new DriveSubsystem();
+    private final IntakeSubsystem intake = new IntakeSubsystem();
+    private final ShooterSubsystem shooter = new ShooterSubsystem();
+
+    private final CommandXboxController driver   = new CommandXboxController(0);
+    private final CommandXboxController operator = new CommandXboxController(1);
+
+    public RobotContainer() {
+        drive.setDefaultCommand(
+            new ArcadeDriveCommand(drive,
+                () -> -driver.getLeftY(),
+                () ->  driver.getRightX())
+        );
+        configureBindings();
+    }
+
+    private void configureBindings() {
+        // Intake runs while right trigger pulled; reverse on left bumper
+        driver.rightTrigger(0.2).whileTrue(new IntakeCommand(intake));
+        driver.leftBumper().whileTrue(new ReverseIntakeCommand(intake));
+
+        // Shoot only when both operator holds A AND shooter is at speed
+        Trigger readyToShoot = operator.a().and(shooter::isAtTargetRpm);
+        readyToShoot.whileTrue(new FeedShooterCommand(intake, shooter));
+
+        // Spin up shooter whenever operator holds right trigger
+        operator.rightTrigger(0.1).whileTrue(new SpinUpShooterCommand(shooter));
+
+        // Haptic feedback when game piece detected
+        new Trigger(intake::hasPiece)
+            .onTrue(new RumbleCommand(driver, 0.6, 0.3));
+    }
+}
+```
+
+## Interactive demo
+
+<CodeTrace
+  client:load
+  variables={{ button: "released", triggerEdge: "none", commandState: "idle" }}
+  steps={[
+    { code: "driver.a() polled → false",          state: { button: "released", triggerEdge: "none",    commandState: "idle"     }, comment: "no change" },
+    { code: "driver.a() polled → false",          state: { button: "released", triggerEdge: "none",    commandState: "idle"     }, comment: "still nothing" },
+    { code: "driver presses A",                   state: { button: "pressed",  triggerEdge: "rising",  commandState: "idle"     }, comment: "edge detected!" },
+    { code: "onTrue → schedule IntakeCommand",    state: { button: "pressed",  triggerEdge: "rising",  commandState: "running"  }, comment: "command starts" },
+    { code: "driver.a() polled → true (held)",    state: { button: "pressed",  triggerEdge: "none",    commandState: "running"  }, comment: "no new edge" },
+    { code: "driver releases A",                  state: { button: "released", triggerEdge: "falling", commandState: "running"  }, comment: "falling edge" },
+    { code: "whileTrue cancel → IntakeCommand",   state: { button: "released", triggerEdge: "falling", commandState: "cancelled"}, comment: "command stops" },
+  ]}
+/>
+
+<Quiz
+  client:load
+  question="You want a command to run continuously while a button is held and stop immediately when released. Which binding do you use?"
+  options={[
+    "onTrue",
+    "whileTrue",
+    "toggleOnTrue",
+    "onFalse"
+  ]}
+  correct={1}
+  explanation="whileTrue schedules the command on the rising edge and cancels it on the falling edge — exactly the 'hold to run' behavior. onTrue only schedules once on press and does not cancel on release."
+/>
+
+<Quiz
+  client:load
+  question="What does new Trigger(() -> arm.getAngle() > 60.0) do?"
+  options={[
+    "Throws an exception — Triggers can only wrap button objects",
+    "Creates a Trigger that fires events when the arm angle crosses 60 degrees",
+    "Continuously prints the arm angle to SmartDashboard",
+    "Locks the arm at 60 degrees using a PID controller"
+  ]}
+  correct={1}
+  explanation="Trigger accepts any BooleanSupplier. This lambda returns true when the arm is above 60 degrees, so the Trigger fires onTrue when the angle rises past 60 and onFalse when it drops back below."
+/>
+
+## Key takeaways
+
+- `Trigger` wraps any `BooleanSupplier` and fires edge-based events each scheduler loop.
+- `CommandXboxController` exposes every button as a ready-made `Trigger` — prefer it over raw `XboxController` in command-based code.
+- Choose the binding method by behavior: `onTrue` (one shot on press), `whileTrue` (hold), `toggleOnTrue` (flip-flop), `onFalse` (on release).
+- Build custom triggers from sensor readings or lambdas — no subclassing needed.
+- Compose triggers with `and()`, `or()`, `negate()` to express multi-condition logic cleanly in `RobotContainer`.
+
+## Common confusions
+
+**"I used onTrue but the command runs forever."** `onTrue` schedules the command once and does not cancel it. If your command's `isFinished()` never returns true, it runs indefinitely. Either fix `isFinished()`, or switch to `whileTrue` if you want the button release to cancel it.
+
+**"toggleOnTrue isn't toggling — it just stays on."** Make sure the command you're toggling actually declares a requirement with `addRequirements()`. Without a requirement, the scheduler can't track it as "already running" and can't cancel it on the next toggle.
+
+**"My composed trigger fires unexpectedly."** Trigger composition is evaluated once per scheduler loop. If `shooter::isAtTargetRpm` has jitter (bounces around the threshold), the composed trigger may fire multiple times. Add hysteresis in your subsystem's `isAtTargetRpm()` method — e.g., use a debounce or a 5 RPM dead-band around the target.
+
+**"Can I bind the same button to two commands?"** Yes — each call to `.onTrue()`, `.whileTrue()`, etc. on the same trigger adds an independent binding. Both commands will be scheduled when the condition fires. Just make sure they don't require the same subsystem, or the second will cancel the first.
+
+## Challenge
+
+<Try>
+Implement a `Trigger` that fires when both joystick axes (left Y and right X) are within ±0.05 of center simultaneously — a "hands off" trigger you might use to switch to a default idle command.
+</Try>
+
+<CodeEditor
+  client:load
+  starterCode={`// Simulate Trigger composition with boolean logic.
+// Complete the handsOff() method so it returns true only
+// when BOTH leftY and rightX are within 0.05 of zero.
+
+public class TriggerDemo {
+
+    static boolean handsOff(double leftY, double rightX) {
+        // TODO: return true when both axes are within ±0.05 of center
+        return false;
+    }
+
+    public static void main(String[] args) {
+        // Test cases
+        System.out.println(handsOff(0.0,  0.0));   // true  - both centered
+        System.out.println(handsOff(0.04, 0.03));  // true  - both within band
+        System.out.println(handsOff(0.1,  0.0));   // false - leftY too large
+        System.out.println(handsOff(0.0,  -0.06)); // false - rightX too large
+        System.out.println(handsOff(0.05, 0.05));  // true  - exactly on boundary
+    }
+}`}
+  testCases={[
+    { label: "both centered",        expected: "true"  },
+    { label: "both within band",     expected: "true"  },
+    { label: "leftY out of range",   expected: "false" },
+    { label: "rightX out of range",  expected: "false" },
+    { label: "exactly on boundary",  expected: "true"  }
+  ]}
+  hint="Math.abs(value) <= threshold checks whether a value is within ±threshold of zero. AND both conditions together."
+/>
+
+## What's next
+
+In **Lesson 08: Driver Input**, we go beyond buttons and look at axis values — how to read joystick positions, apply deadbands, shape the response curve, and structure a full arcade or tank drive command.

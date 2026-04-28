@@ -1,0 +1,336 @@
+---
+import { getCollection } from 'astro:content';
+import '../styles/global.css';
+
+const allLessons = await getCollection('lessons', ({ data }) => !data.draft);
+
+const TRACKS = [
+  {
+    id: 'frc-intro',
+    label: 'FRC Intro',
+    level: 'Start here — no experience needed',
+    desc: 'What FRC is, how a match works, the development workflow, and your first robot program.',
+    color: '#5df5a0',
+  },
+  {
+    id: 'fundamentals',
+    label: 'Fundamentals',
+    level: 'After FRC Intro',
+    desc: 'Programs, types, loops, functions, arrays, classes, enums, state machines, and debugging.',
+    color: 'var(--accent)',
+  },
+  {
+    id: 'robot-code',
+    label: 'Robot Code',
+    level: 'After Fundamentals',
+    desc: 'WPILib subsystems, commands, motors, sensors, driver input, autonomous routines, and simulation.',
+    color: '#7ecfff',
+  },
+  {
+    id: 'control-systems',
+    label: 'Control Systems',
+    level: 'After Robot Code',
+    desc: 'PID control, feedforward, motion profiling, system identification, and state-space control.',
+    color: '#a88cff',
+  },
+  {
+    id: 'software-engineering',
+    label: 'Software Engineering',
+    level: 'After Robot Code',
+    desc: 'Command-based architecture, subsystem design patterns, testing, logging, Git, and code review.',
+    color: '#ff8f6b',
+  },
+];
+
+function lessonUrl(l: (typeof allLessons)[number]) {
+  const [track, slug] = l.slug.split('/');
+  return `/lessons/${track}/${slug}`;
+}
+
+const byTrack = Object.fromEntries(
+  TRACKS.map(t => [
+    t.id,
+    allLessons.filter(l => l.data.track === t.id).sort((a, b) => a.data.lesson - b.data.lesson),
+  ])
+);
+---
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Control Lab — FRC 498</title>
+</head>
+<body class="index-page">
+
+  <header class="top-nav">
+    <div class="top-nav-inner">
+      <a href="/" class="brand-link">
+        <span class="brand-mark">498</span>
+        <div class="brand-text">
+          <span class="brand-name">Control Lab</span>
+          <span class="brand-sub">FRC Programming Curriculum</span>
+        </div>
+      </a>
+      <div class="top-nav-meta">
+        <strong>{allLessons.length}</strong> lessons across <strong>{TRACKS.length}</strong> tracks
+      </div>
+    </div>
+  </header>
+
+  <main class="curriculum">
+    <section class="hero">
+      <p class="hero-eyebrow">FRC 498 · Cobras Programming Team</p>
+      <h1 class="hero-title">Master robot software,<br/>one concept at a time.</h1>
+      <p class="hero-sub">A self-paced curriculum covering everything from your first program to advanced control systems. Pick a track based on what you want to learn.</p>
+    </section>
+
+    <div class="track-grid">
+      {TRACKS.map(track => {
+        const lessons = byTrack[track.id] ?? [];
+        const first = lessons[0];
+        return (
+          <section class="track-card" style={`--track-color: ${track.color}`}>
+            <div class="track-top">
+              <div class="track-meta">
+                <span class="track-level">{track.level}</span>
+                <h2 class="track-name">{track.label}</h2>
+                <p class="track-desc">{track.desc}</p>
+              </div>
+              {first && (
+                <a href={lessonUrl(first)} class="begin-btn">
+                  {lessons.length === 1 ? 'Start' : 'Begin'} →
+                </a>
+              )}
+              {!first && (
+                <span class="coming-soon">Coming soon</span>
+              )}
+            </div>
+
+            {lessons.length > 0 && (
+              <details class="lesson-details">
+                <summary>
+                  <span class="lesson-count">{lessons.length} lesson{lessons.length !== 1 ? 's' : ''}</span>
+                  <span class="toggle-hint">show</span>
+                </summary>
+                <ul class="lesson-table">
+                  {lessons.map(l => (
+                    <li>
+                      <a href={lessonUrl(l)} class="lesson-row">
+                        <span class="l-num">{String(l.data.lesson).padStart(2, '0')}</span>
+                        <span class="l-title">{l.data.title}</span>
+                        <span class="l-arrow">→</span>
+                      </a>
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            )}
+          </section>
+        );
+      })}
+    </div>
+  </main>
+
+</body>
+</html>
+
+<style>
+.curriculum {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: calc(var(--nav-h) + 2.5rem) 2rem 6rem;
+}
+
+/* Hero */
+.hero {
+  padding-bottom: 3rem;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 2.75rem;
+}
+.hero-eyebrow {
+  font-family: "Audiowide", "Kanit", sans-serif;
+  font-size: 0.7rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 1rem;
+}
+.hero-title {
+  font-family: "Kanit", sans-serif;
+  font-size: clamp(1.9rem, 4.5vw, 2.75rem);
+  font-weight: 700;
+  letter-spacing: -0.025em;
+  color: var(--text);
+  line-height: 1.12;
+  margin-bottom: 1rem;
+}
+.hero-sub {
+  font-size: 0.95rem;
+  color: var(--light-grey);
+  max-width: 560px;
+  line-height: 1.65;
+}
+
+/* Track grid */
+.track-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 0.875rem;
+}
+
+/* Track card */
+.track-card {
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  overflow: hidden;
+  transition: border-color 0.18s;
+}
+.track-card:hover {
+  border-color: color-mix(in srgb, var(--track-color) 40%, transparent);
+}
+
+.track-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1.5rem;
+  padding: 1.25rem 1.5rem;
+}
+.track-meta { flex: 1; min-width: 0; }
+
+.track-level {
+  display: inline-block;
+  font-family: "Audiowide", "Kanit", sans-serif;
+  font-size: 0.6rem;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--track-color);
+  margin-bottom: 0.4rem;
+  opacity: 0.85;
+}
+.track-name {
+  font-family: "Kanit", sans-serif;
+  font-size: 1.2rem;
+  font-weight: 700;
+  letter-spacing: -0.005em;
+  color: var(--text);
+  margin-bottom: 0.4rem;
+}
+.track-desc {
+  font-size: 0.87rem;
+  color: var(--light-grey);
+  line-height: 1.55;
+  max-width: 480px;
+}
+
+.begin-btn {
+  flex-shrink: 0;
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  padding: 0.5em 1.25em;
+  border-radius: var(--r-sm);
+  background: var(--track-color);
+  color: #04141e;
+  font-family: "Kanit", sans-serif;
+  font-size: 0.84rem;
+  font-weight: 700;
+  transition: filter 0.15s, transform 0.1s;
+}
+.begin-btn:hover { filter: brightness(1.12); }
+.begin-btn:active { transform: translateY(1px); }
+
+.coming-soon {
+  flex-shrink: 0;
+  align-self: center;
+  font-family: "Kanit", sans-serif;
+  font-size: 0.78rem;
+  color: var(--dark-grey);
+  font-style: italic;
+}
+
+/* Collapsible lesson list */
+.lesson-details { border-top: 1px solid var(--border); }
+
+.lesson-details summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.65rem 1.5rem;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  background: rgba(0,0,0,0.25);
+  transition: background 0.12s;
+}
+.lesson-details summary:hover { background: rgba(0,0,0,0.4); }
+.lesson-details[open] summary { border-bottom: 1px solid var(--border-subtle); }
+
+.lesson-count {
+  font-family: "Audiowide", "Kanit", sans-serif;
+  font-size: 0.65rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--dark-grey);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.lesson-count::before {
+  content: '▶';
+  font-size: 0.5rem;
+  transition: transform 0.18s ease;
+}
+.lesson-details[open] .lesson-count::before { transform: rotate(90deg); }
+
+.toggle-hint {
+  font-family: "Kanit", sans-serif;
+  font-size: 0.72rem;
+  color: var(--dark-grey);
+  transition: color 0.12s;
+}
+.lesson-details[open] .toggle-hint { display: none; }
+.lesson-details summary:hover .toggle-hint { color: var(--accent); }
+
+.lesson-table { background: rgba(0,0,0,0.2); }
+.lesson-table li:not(:last-child) .lesson-row {
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.lesson-row {
+  display: grid;
+  grid-template-columns: 2.25rem 1fr 1.25rem;
+  align-items: center;
+  gap: 0.875rem;
+  padding: 0.7rem 1.5rem;
+  transition: background 0.1s;
+}
+.lesson-row:hover { background: var(--surface-hover); }
+.lesson-row:hover .l-arrow { opacity: 1; color: var(--track-color); transform: translateX(2px); }
+.lesson-row:hover .l-title { color: var(--highlight); }
+
+.l-num {
+  font-family: "Audiowide", "Kanit", monospace;
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+  color: var(--dark-grey);
+  text-align: right;
+}
+.l-title {
+  font-family: "Kanit", sans-serif;
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: var(--text);
+  transition: color 0.1s;
+}
+.l-arrow {
+  font-size: 0.8rem;
+  color: var(--dark-grey);
+  opacity: 0.4;
+  text-align: right;
+  transition: opacity 0.1s, color 0.1s, transform 0.1s;
+}
+</style>

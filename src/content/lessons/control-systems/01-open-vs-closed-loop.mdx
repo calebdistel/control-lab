@@ -1,0 +1,210 @@
+---
+track: control-systems
+lesson: 1
+title: "Open vs Closed Loop"
+prereqs: [robot-code-05]
+objectives:
+  - Distinguish between open-loop and closed-loop control systems
+  - Identify the three signals in a feedback loop: setpoint, measurement, and error
+  - Explain why open-loop control fails under real-world conditions like load changes and battery droop
+  - Describe how a voltage-only flywheel differs from a speed-controlled flywheel in FRC
+---
+
+import Key from '../../../components/Key.astro';
+import Try from '../../../components/Try.astro';
+import Note from '../../../components/Note.astro';
+import Warn from '../../../components/Warn.astro';
+import CodeTrace from '../../../components/demos/CodeTrace.jsx';
+import Quiz from '../../../components/demos/Quiz.jsx';
+import CodeEditor from '../../../components/demos/CodeEditor.jsx';
+
+## Hook
+
+You're at a competition. Your shooter flywheel spins up to what felt like the right speed during practice, and you fire. The ball hits the back wall — not the goal. You fire again. Same thing. A mentor checks the battery: it's at 11.2 V instead of the 12.6 V you had in the pit.
+
+Nobody changed the code. So what happened?
+
+This is the fundamental problem that control theory solves. Understanding why that shot missed is the first step to writing robots that behave reliably regardless of battery level, mechanical friction, or whether you're at match 3 or match 47 of a long competition day.
+
+## Core concept
+
+<Key>
+Open-loop control sends a fixed output and never checks whether the result is correct. Closed-loop control continuously measures the actual result, compares it to the desired result, and adjusts the output to close the gap.
+</Key>
+
+### Open-loop control: set it and forget it
+
+In an open-loop system, you decide what output to send to the actuator (motor, solenoid, etc.) and you never look back. The system has no way of knowing whether it achieved the desired state.
+
+The simplest FRC example is setting a motor to a fixed voltage:
+
+```java
+// Open-loop: just push the motor at 60% output
+shooter.set(0.6);
+```
+
+You're telling the motor controller "apply 60% of available voltage." The controller does exactly that — but "60% of available voltage" is a moving target. At 12.6 V that's 7.56 V across the motor. At 11.2 V (a partially discharged battery under load) that's 6.72 V — nearly 11% less. The motor spins slower. The ball flies shorter.
+
+Open-loop also can't compensate for:
+- **Mechanical wear** — bearings getting stiffer over the season
+- **Load changes** — a ball entering the shooter adds resistance
+- **Temperature** — motors have higher resistance when warm
+- **Gearbox friction variance** — no two gearboxes are identical
+
+### Closed-loop control: measure, compare, adjust
+
+A closed-loop (feedback) control system adds a sensor to the picture. Every cycle it asks: "Where am I right now, and where do I want to be?" The difference between those two answers drives the output.
+
+The three essential signals are:
+
+| Signal | Definition | FRC Example |
+|---|---|---|
+| **Setpoint** | The desired state you want to reach | 3000 RPM |
+| **Measurement** | The actual state right now (from a sensor) | 2750 RPM (read from encoder) |
+| **Error** | Setpoint minus measurement | 250 RPM |
+
+The fundamental relationship is:
+
+`error = setpoint - measurement`
+
+A positive error means you're below target and need more output. A negative error means you've overshot and may need to reduce output. A zero error means you've arrived.
+
+### The feedback loop diagram
+
+```
+           setpoint
+               |
+               v
+          [  error  ] <---- measurement
+               |                 ^
+               v                 |
+          [controller]           |
+               |                 |
+               v                 |
+           [actuator]            |
+               |                 |
+               v                 |
+            [plant] ------------>+
+           (robot)            [sensor]
+```
+
+The "plant" is the physical system you're controlling (the robot mechanism). The controller looks at the error each loop cycle (typically every 20 ms in WPILib) and produces an output. That output drives the actuator, the plant responds, the sensor measures the new state, and the loop repeats.
+
+### Voltage-only flywheel vs speed-controlled flywheel
+
+**Open-loop flywheel:**
+```java
+@Override
+public void teleopPeriodic() {
+    if (shootButton.getAsBoolean()) {
+        flywheelMotor.set(0.75); // fixed 75% output
+    } else {
+        flywheelMotor.set(0.0);
+    }
+}
+```
+This will shoot inconsistently throughout the match as the battery drains. Early in the match the wheel may overspeed; late in the match it underspeeds. You can partially compensate with voltage compensation mode on modern motor controllers, but you still can't handle mechanical disturbances.
+
+**Closed-loop flywheel:**
+```java
+private PIDController flywheelPID = new PIDController(0.001, 0.0, 0.0);
+private Encoder flywheelEncoder = new Encoder(0, 1);
+
+@Override
+public void teleopPeriodic() {
+    if (shootButton.getAsBoolean()) {
+        double measurement = flywheelEncoder.getRate(); // RPM from encoder
+        double output = flywheelPID.calculate(measurement, 3000.0); // target 3000 RPM
+        flywheelMotor.set(output);
+    } else {
+        flywheelMotor.set(0.0);
+    }
+}
+```
+Now the controller measures actual speed every 20 ms. If the battery sags, the measurement drops below 3000 RPM, the error grows, and the controller increases output. The battery droop is automatically compensated.
+
+<Note>
+WPILib's PIDController.calculate(measurement, setpoint) takes measurement first and setpoint second — the opposite order from what you might expect. It internally computes error = setpoint - measurement. Double-check argument order to avoid sign errors.
+</Note>
+
+### When is open-loop acceptable?
+
+Open-loop is fine when:
+- You don't need precision (intake rollers running at "fast enough")
+- The system is position-commanded and holding still (a solenoid — either in or out)
+- You're using it as part of a larger feedforward system where the open-loop term is physics-based rather than guessed
+
+<Warn>
+Never use open-loop for mechanisms that need to reach and hold a precise state: shooters, elevators, arms, autonomous driving. Even small errors compound over time or cause inconsistent game piece handling.
+</Warn>
+
+## Key takeaways
+
+- Open-loop control outputs a fixed command with no awareness of actual state. It is simple but brittle.
+- Closed-loop control uses a sensor to measure actual state, computes the error against the setpoint, and adjusts output every loop cycle.
+- The three fundamental signals in any feedback loop are **setpoint**, **measurement**, and **error**. `error = setpoint - measurement`.
+- Real-world disturbances — battery droop, load changes, friction — will always cause open-loop systems to drift from their intended behavior. Closed-loop systems reject these disturbances automatically.
+- In FRC, the most common place teams first feel the need for closed-loop is the shooter flywheel, but the same principle applies to every precision mechanism on the robot.
+
+## Common confusions
+
+**"Can't I just use voltage compensation to fix the battery droop problem?"**
+
+Voltage compensation (available in CTRE and REV motor controllers) normalizes output to a fixed bus voltage. It fixes one specific open-loop failure mode — battery droop — but it cannot compensate for mechanical disturbances, load changes, or manufacturing variance between robots. It's a useful tool but not a substitute for feedback control when precision matters.
+
+**"My encoder reads in ticks, not RPM. How does error work?"**
+
+Units don't change the concept. error = setpoint - measurement, and both sides just need to be in the same units. You can work in ticks, ticks-per-second, radians, radians-per-second, meters, or any consistent unit. Just be consistent throughout your controller.
+
+**"The error is zero but the robot isn't where I want it."**
+
+This almost always means the sensor is wrong — misconfigured encoder, wrong conversion factor, or a sensor reading relative position when you need absolute position. The controller can only drive error to zero; it can't correct a broken sensor reading.
+
+**"I set the setpoint but nothing moves."**
+
+Check that the controller output is actually being sent to the motor, that the motor controller is enabled, and that the output isn't being clamped to zero by a safety limit somewhere. It's also worth confirming the sensor is returning a changing value — a stuck encoder will report zero error even if the motor isn't moving.
+
+## Challenge
+
+<Try>
+Given the following scenario, identify the setpoint, the measurement source, and compute the error.
+
+Scenario: You want an arm to be at 90 degrees. Your absolute encoder reports the arm is currently at 73 degrees.
+
+Then, extend the reasoning: if the next loop cycle the arm has moved to 81 degrees, what is the new error?
+</Try>
+
+<CodeEditor
+  client:load
+  starterCode={`public class FeedbackLoop {
+    public static void main(String[] args) {
+        // Scenario 1: Arm control
+        double setpoint = 90.0;    // degrees — target position
+        double measurement = 73.0; // degrees — current encoder reading
+
+        // TODO: Compute the error
+        double error = 0.0; // fix this line
+
+        System.out.println("Setpoint:    " + setpoint + " deg");
+        System.out.println("Measurement: " + measurement + " deg");
+        System.out.println("Error:       " + error + " deg");
+
+        // Scenario 2: After the arm moves to 81 degrees
+        double measurement2 = 81.0;
+        double error2 = 0.0; // fix this line too
+
+        System.out.println("\\nAfter movement:");
+        System.out.println("Measurement: " + measurement2 + " deg");
+        System.out.println("Error:       " + error2 + " deg");
+    }
+}`}
+  testCases={[
+    { label: "Initial error is 17.0 deg", expected: "Error:       17.0 deg" },
+    { label: "Updated error is 9.0 deg", expected: "Error:       9.0 deg" }
+  ]}
+  hint="error = setpoint - measurement. Apply this formula to both scenarios."
+/>
+
+## What's next
+
+You now understand why feedback control exists and what the three core signals are. The next step is to look at the simplest possible feedback controller: bang-bang control. It makes a binary decision — full on or full off — based solely on whether the error is positive or negative. It's crude, but understanding its failure modes will make proportional control click much faster.

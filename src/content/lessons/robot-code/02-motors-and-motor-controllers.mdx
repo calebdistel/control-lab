@@ -1,0 +1,319 @@
+---
+track: robot-code
+lesson: 2
+title: Motors and Motor Controllers
+prereqs: [robot-code-01]
+objectives:
+  - Distinguish brushed from brushless motors and explain why the distinction matters for code
+  - Identify when to use CAN bus vs PWM and name the tradeoffs of each
+  - Instantiate and configure a WPI_TalonSRX, WPI_VictorSPX, and CANSparkMax in Java
+  - Set motor speed, invert direction, and configure neutral mode and current limits
+  - Explain why motor safety features matter in a competition context
+---
+
+import Key from '../../../components/Key.astro';
+import Try from '../../../components/Try.astro';
+import Note from '../../../components/Note.astro';
+import Warn from '../../../components/Warn.astro';
+import CodeTrace from '../../../components/demos/CodeTrace.jsx';
+import Quiz from '../../../components/demos/Quiz.jsx';
+import CodeEditor from '../../../components/demos/CodeEditor.jsx';
+
+## Hook
+
+Your drivetrain code compiles, deploys, and the robot moves — then a wheel starts spinning the wrong way. You flip the sign in your `set()` call. Now one side goes backward when it should go forward. You flip another. Half an hour later your code is a tangled mess of minus signs.
+
+This happens to every team that doesn't understand motor controller configuration. In this lesson you'll learn how to configure motors correctly from the start: how to pick the right class, how to invert cleanly, and how to add safety features so a stuck mechanism doesn't fry a motor or trip a breaker mid-match.
+
+## Core concept
+
+<Key>
+A motor controller sits between the robot's power distribution and the motor itself. Your code tells the controller what to do (speed, voltage, position) and the controller handles the high-current switching. WPILib and vendor libraries give you Java classes that talk to these controllers over CAN bus or PWM.
+</Key>
+
+## Brushed vs brushless motors
+
+**Brushed motors** (CIM, MiniCIM, 775pro, BAG) use physical brushes to switch current through the windings. They're simple, cheap, and robust — and they wear out over time because the brushes erode. Any motor controller that can supply the right voltage/current can drive them.
+
+**Brushless motors** (NEO, NEO 550, Falcon 500/Kraken X60) have no brushes. The controller itself manages the commutation electronically, which means the controller and the motor are a tightly coupled pair. A NEO *requires* a SPARK MAX. A Falcon requires a TalonFX. You cannot mix brands.
+
+| Property | Brushed | Brushless |
+|---|---|---|
+| Examples | CIM, 775pro | NEO, Falcon 500 |
+| Controller pairing | Any compatible | Must match vendor |
+| Efficiency | Lower (~75–80%) | Higher (~90–95%) |
+| Heat under stall | Builds quickly | Better, but still stalls |
+| Code difference | `MotorType.kBrushed` | `MotorType.kBrushless` |
+
+## CAN bus vs PWM
+
+**PWM (Pulse Width Modulation)** sends a single analog signal over a 3-wire cable. The pulse width encodes speed from –1 to +1. It's simple and works with any compatible controller, but you get no feedback — you can't read current, temperature, or faults over the same wire.
+
+**CAN bus** is a two-wire differential network shared by all devices on the robot. Each device has a unique numeric ID. CAN supports two-way communication: you can send commands *and* read back diagnostics (current draw, temperature, sticky faults, encoder position). Modern FRC teams use CAN for almost everything because the diagnostics save enormous debugging time.
+
+<Note>
+CAN IDs must be unique across *all* devices on the bus — motors, PDP, PCM, Pigeon IMU. Teams typically assign IDs by mechanism (1–4 for drivetrain, 10–12 for arm, 20 for elevator, etc.) and document them in a spreadsheet.
+</Note>
+
+## CTRE controllers: TalonSRX and VictorSPX
+
+CTRE (Cross The Road Electronics) controllers use the `com.ctre.phoenix.motorcontrol.can` package. Import it from the CTRE Phoenix vendor library (added via `vendordeps`).
+
+```java
+import com.ctre.phoenix.motorcontrol.can.WPI_TalonSRX;
+import com.ctre.phoenix.motorcontrol.can.WPI_VictorSPX;
+import com.ctre.phoenix.motorcontrol.NeutralMode;
+
+// In your Subsystem:
+private final WPI_TalonSRX leftLeader  = new WPI_TalonSRX(1);
+private final WPI_VictorSPX leftFollower = new WPI_VictorSPX(2);
+```
+
+The `WPI_` prefix means these classes implement WPILib's `SpeedController` (now `MotorController`) interface, so they drop into standard WPILib patterns.
+
+**Basic speed control:**
+
+```java
+leftLeader.set(0.5);   // 50% output, forward
+leftLeader.set(-0.3);  // 30% output, reverse
+leftLeader.set(0.0);   // stop
+```
+
+**Inverting direction:**
+
+```java
+leftLeader.setInverted(true);   // positive set() now spins the other way
+```
+
+**Follower mode** — one controller mirrors another so you don't have to call `set()` on each:
+
+```java
+leftFollower.follow(leftLeader);
+// Now leftFollower always matches leftLeader's output.
+// Call set() only on leftLeader.
+```
+
+**Neutral mode** — what happens when output is 0:
+
+```java
+leftLeader.setNeutralMode(NeutralMode.Brake);  // motor fights rotation — stops fast
+leftLeader.setNeutralMode(NeutralMode.Coast);  // motor freewheels — coasts to a stop
+```
+
+Brake mode is preferred for mechanisms that need to hold position (arms, elevators). Coast mode is often better for drivetrains where abrupt stops could tip the robot.
+
+**Current limits (TalonSRX):**
+
+```java
+// Stator current limit (current flowing through motor)
+leftLeader.configStatorCurrentLimit(
+    new StatorCurrentLimitConfiguration(
+        true,   // enable
+        40,     // limit (amps) — steady state
+        60,     // trigger threshold (amps) — allowed briefly
+        0.1     // time (seconds) above threshold before limiting
+    )
+);
+```
+
+<Warn>
+Without current limits, a stalled motor (e.g., an arm hitting a hard stop) can draw 200+ amps for several seconds, tripping the breaker and disabling your robot mid-match. Always configure current limits on mechanisms that can stall.
+</Warn>
+
+## REV controllers: CANSparkMax
+
+REV Robotics SPARK MAX controllers use the `com.revrobotics` package. Import the REVLib vendor library.
+
+```java
+import com.revrobotics.CANSparkMax;
+import com.revrobotics.CANSparkMax.IdleMode;
+import com.revrobotics.CANSparkMaxLowLevel.MotorType;
+
+private final CANSparkMax rightLeader  = new CANSparkMax(3, MotorType.kBrushless);
+private final CANSparkMax rightFollower = new CANSparkMax(4, MotorType.kBrushless);
+```
+
+Use `MotorType.kBrushed` if driving a CIM or 775pro through a SPARK MAX (this is supported but less common).
+
+**Basic speed control** — identical interface:
+
+```java
+rightLeader.set(0.5);
+rightLeader.set(0.0);
+```
+
+**Inverting:**
+
+```java
+rightLeader.setInverted(true);
+```
+
+**Follower mode:**
+
+```java
+rightFollower.follow(rightLeader);
+// Optional: invert the follower relative to the leader
+rightFollower.follow(rightLeader, true);
+```
+
+**Idle mode (equivalent to neutral mode):**
+
+```java
+rightLeader.setIdleMode(IdleMode.kBrake);
+rightLeader.setIdleMode(IdleMode.kCoast);
+```
+
+**Current limits:**
+
+```java
+// Smart current limit — REV's recommended approach for NEO motors
+rightLeader.setSmartCurrentLimit(40);  // 40 amps for a NEO driving a swerve module
+
+// Secondary (absolute) current limit — hardware enforced ceiling
+rightLeader.setSecondaryCurrentLimit(60);
+```
+
+**Burning to flash** — SPARK MAX settings are lost on power cycle unless saved:
+
+```java
+rightLeader.burnFlash();  // call once during configuration, not in a loop
+```
+
+<Note>
+`burnFlash()` has a finite write-cycle limit on the controller's flash memory. Configure once in a setup method, not on every boot. Most teams call it once in the constructor behind a `if (RobotBase.isReal())` check, or manage it with a dedicated configuration command.
+</Note>
+
+## Complete teleop example
+
+Here's a full Subsystem skeleton wiring both sides of a differential drivetrain:
+
+```java
+import com.ctre.phoenix.motorcontrol.NeutralMode;
+import com.ctre.phoenix.motorcontrol.can.WPI_TalonSRX;
+import com.ctre.phoenix.motorcontrol.can.WPI_VictorSPX;
+import edu.wpi.first.wpilibj2.command.SubsystemBase;
+
+public class DriveSubsystem extends SubsystemBase {
+
+    private final WPI_TalonSRX  leftLeader   = new WPI_TalonSRX(1);
+    private final WPI_VictorSPX leftFollower = new WPI_VictorSPX(2);
+    private final WPI_TalonSRX  rightLeader  = new WPI_TalonSRX(3);
+    private final WPI_VictorSPX rightFollower = new WPI_VictorSPX(4);
+
+    public DriveSubsystem() {
+        // Invert right side so positive = forward on both sides
+        rightLeader.setInverted(true);
+        rightFollower.setInverted(true);
+
+        // Followers mirror their leader
+        leftFollower.follow(leftLeader);
+        rightFollower.follow(rightLeader);
+
+        // Brake mode — stops quickly when driver releases sticks
+        leftLeader.setNeutralMode(NeutralMode.Brake);
+        leftFollower.setNeutralMode(NeutralMode.Brake);
+        rightLeader.setNeutralMode(NeutralMode.Brake);
+        rightFollower.setNeutralMode(NeutralMode.Brake);
+
+        // Current limits to protect 40A breakers
+        configureCurrentLimit(leftLeader);
+        configureCurrentLimit(rightLeader);
+    }
+
+    private void configureCurrentLimit(WPI_TalonSRX talon) {
+        talon.configStatorCurrentLimit(
+            new com.ctre.phoenix.motorcontrol.StatorCurrentLimitConfiguration(
+                true, 38, 55, 0.1
+            )
+        );
+    }
+
+    /** Drive the robot. left and right are in the range [-1, 1]. */
+    public void tankDrive(double left, double right) {
+        leftLeader.set(left);
+        rightLeader.set(right);
+    }
+
+    @Override
+    public void periodic() {
+        // Telemetry — visible on SmartDashboard / Shuffleboard
+        SmartDashboard.putNumber("Drive/LeftCurrent",
+            leftLeader.getStatorCurrent());
+        SmartDashboard.putNumber("Drive/RightCurrent",
+            rightLeader.getStatorCurrent());
+    }
+}
+```
+
+<CodeTrace
+  client:load
+  variables={{ leftOut: "0.0", rightOut: "0.0", leftA: "0.0", rightA: "0.0" }}
+  steps={[
+    { code: "tankDrive(0.8, 0.8)",     state: { leftOut: "0.8",  rightOut: "0.8",  leftA: "12.1", rightA: "11.8" }, comment: "driving forward" },
+    { code: "tankDrive(0.8, -0.8)",    state: { leftOut: "0.8",  rightOut: "-0.8", leftA: "12.3", rightA: "12.0" }, comment: "turning in place" },
+    { code: "tankDrive(0.0, 0.0)",     state: { leftOut: "0.0",  rightOut: "0.0",  leftA: "1.2",  rightA: "1.1"  }, comment: "stopped (brake mode)" },
+    { code: "leftLeader stalls (arm hits hard stop)", state: { leftOut: "0.5",  rightOut: "0.5",  leftA: "55.0", rightA: "12.2" }, comment: "current limit triggers at 55A" },
+    { code: "current limit active",    state: { leftOut: "0.5",  rightOut: "0.5",  leftA: "38.0", rightA: "12.2" }, comment: "limited to 38A — motor protected" },
+  ]}
+/>
+
+## Key takeaways
+
+- Brushless motors (NEO, Falcon) must be paired with their matching controller. Brushed motors can use any compatible controller.
+- CAN bus gives you diagnostics (current, temperature, faults). PWM is simpler but one-way.
+- Use `setInverted()` to fix direction, never negate in your control logic.
+- Follower mode keeps secondary controllers in sync without additional `set()` calls.
+- Brake mode holds position; coast mode freewheels. Choose based on your mechanism.
+- Current limits protect motors from stall damage and protect breakers from tripping.
+
+## Common confusions
+
+**"The follower motor is going the wrong direction."** Followers mirror the output signal, not the physical motion. If the leader is already inverted, the follower may need to be inverted independently *or* follow with the invert flag: `follower.follow(leader, true)`.
+
+**"I called `set()` but nothing happened."** Check: (1) Is the CAN ID correct and unique? (2) Is the vendor library in `vendordeps`? (3) Is the robot enabled in driver station? (4) Did you get a CAN error in the Rio's console? Use Phoenix Tuner X or REV Hardware Client to confirm the controller appears on the bus.
+
+**"The motor stutters or behaves erratically at low speeds."** This is often a deadband issue. Both TalonSRX and SPARK MAX have a built-in deadband (default ~4%). Inputs below that threshold output zero. You can adjust it, but be careful — too small a deadband makes joystick drift visible as movement.
+
+**"Coast vs brake: my arm falls when I let go."** That's coast mode. Switch to brake mode: `setNeutralMode(NeutralMode.Brake)` or `setIdleMode(IdleMode.kBrake)`. For heavy mechanisms, even brake mode may not hold against gravity — you'll need active control (covered in the PID lesson).
+
+## Challenge
+
+<Try>
+Write a static method `clampAndLog(double requested)` that clamps a motor output to the range [−0.75, 0.75] and prints both the requested and actual output. Then call it with several test values including out-of-range inputs.
+</Try>
+
+<CodeEditor
+  client:load
+  starterCode={`public class MotorSafety {
+
+    /**
+     * Clamp a motor output to [-maxOutput, maxOutput] and log both values.
+     * maxOutput = 0.75
+     */
+    public static double clampAndLog(double requested) {
+        // TODO: implement clamping
+        // TODO: print "Requested: X  Actual: Y" (round to 2 decimal places)
+        return requested; // replace with clamped value
+    }
+
+    public static void main(String[] args) {
+        clampAndLog(1.0);    // should clamp to  0.75
+        clampAndLog(-1.0);   // should clamp to -0.75
+        clampAndLog(0.5);    // within range, no clamp
+        clampAndLog(0.0);    // zero passthrough
+        clampAndLog(0.76);   // just over the limit
+    }
+}`}
+  testCases={[
+    { label: "Clamp positive overflow",    expected: "Requested: 1.00  Actual: 0.75" },
+    { label: "Clamp negative overflow",    expected: "Requested: -1.00  Actual: -0.75" },
+    { label: "Pass-through in range",      expected: "Requested: 0.50  Actual: 0.50" },
+    { label: "Zero passthrough",           expected: "Requested: 0.00  Actual: 0.00" },
+    { label: "Just-over-limit clamp",      expected: "Requested: 0.76  Actual: 0.75" },
+  ]}
+  hint="Use Math.max(-0.75, Math.min(0.75, requested)) to clamp. Use String.format('%.2f', value) to format to two decimal places."
+/>
+
+## What's next
+
+In **Robot Code Lesson 03** we'll add feedback: encoders and sensors. You'll learn how to read position and velocity from a motor's built-in encoder or an external quadrature encoder, how to use limit switches to detect mechanism boundaries, and how to convert raw encoder ticks into real-world units like inches or degrees.
