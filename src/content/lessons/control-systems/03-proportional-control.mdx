@@ -1,0 +1,253 @@
+---
+track: control-systems
+lesson: 3
+title: "Proportional Control"
+prereqs: [control-systems-02]
+objectives:
+  - Compute proportional controller output using the formula output = kP times error
+  - Explain why a large kP causes oscillation and a small kP causes sluggish response
+  - Describe steady-state error and why a P-only controller cannot eliminate it
+  - Apply the doubling-then-halving heuristic to tune kP on a real mechanism
+---
+
+import Key from '../../../components/Key.astro';
+import Try from '../../../components/Try.astro';
+import Note from '../../../components/Note.astro';
+import Warn from '../../../components/Warn.astro';
+import CodeTrace from '../../../components/demos/CodeTrace.jsx';
+import Quiz from '../../../components/demos/Quiz.jsx';
+import CodeEditor from '../../../components/demos/CodeEditor.jsx';
+
+## Hook
+
+Bang-bang control gave us the ability to close the loop, but it only had two gears: full power and off. Think about driving a car that way — flooring the gas until you hit the speed limit, then cutting the engine entirely, then flooring it again. You'd never get a smooth ride.
+
+What if instead of asking "am I above or below the setpoint?" you asked "how far below am I?" A tiny error should produce a gentle nudge. A huge error should produce a strong push. The output should be proportional to the error.
+
+That's the entire idea behind proportional control, and it's the first letter in PID.
+
+## Core concept
+
+<Key>
+Proportional control computes output as a constant (kP) multiplied by the current error. A large error produces a large corrective output; a small error produces a small output. The controller naturally reduces its effort as it approaches the setpoint — but it can never fully eliminate a small persistent error called steady-state error, because at zero error it produces zero output.
+</Key>
+
+### The proportional equation
+
+`output = kP * error`
+
+`error = setpoint - measurement`
+
+So the full expression is:
+
+`output = kP * (setpoint - measurement)`
+
+That's it. kP (the proportional gain) is a tunable constant you choose. Its units depend on your system: if error is in RPM and output is a fraction from -1 to 1, then kP has units of 1/RPM.
+
+### Visualizing proportional control
+
+Imagine a flywheel at 0 RPM with a setpoint of 3000 RPM and kP = 0.0003:
+
+| Loop | Measurement (RPM) | Error | Output |
+|------|------------------|-------|--------|
+| 1 | 0 | 3000 | 0.9 |
+| 5 | 1800 | 1200 | 0.36 |
+| 10 | 2700 | 300 | 0.09 |
+| 15 | 2940 | 60 | 0.018 |
+| 20 | 2970 | 30 | 0.009 |
+
+Notice what's happening: as the flywheel speeds up, the error shrinks, so the output shrinks. The controller is doing exactly what we want — it pushes hard when it's far away and gently when it's close. The response is smooth rather than a hard bang.
+
+### The steady-state error problem
+
+Look at what happens when the flywheel gets close to the setpoint. At 2970 RPM the output is only 0.009 (less than 1%). But the flywheel has friction. Friction opposes motion. At some point the tiny output from the proportional term is no longer enough to overcome friction and maintain speed — the flywheel stops accelerating and settles at, say, 2985 RPM.
+
+At 2985 RPM: `output = 0.0003 * (3000 - 2985) = 0.0003 * 15 = 0.0045`
+
+That tiny output just barely overcomes friction, so the flywheel hangs at 2985 RPM forever. The controller has reached a balance point where output equals the disturbance (friction), but it's not at the setpoint. This persistent gap is called **steady-state error**.
+
+The fundamental reason: at zero error, output is zero. But zero output doesn't hold a mechanism in place against friction or gravity — you need some nonzero output just to maintain the current state. A P-only controller's output goes to zero exactly when it reaches setpoint, which means it always settles slightly short.
+
+**Increasing kP reduces steady-state error** — a higher kP produces more output for the same error, which means the balance point with friction is at a smaller error. But there's a limit to how high you can push kP before a new problem appears.
+
+### kP too large: oscillation
+
+If kP is too high, the controller overshoots the setpoint. When it overshoots, the error reverses sign, and the controller pushes hard in the other direction. If that overcorrection is also too large, it overshoots again. The result is oscillation.
+
+At very high kP (say kP = 0.01 for the same flywheel):
+
+| Loop | Measurement (RPM) | Error | Output |
+|------|------------------|-------|--------|
+| 1 | 0 | 3000 | 30 (clamped to 1.0) |
+| 3 | 3400 | -400 | -4.0 (clamped to -1.0) |
+| 5 | 2500 | 500 | 5.0 (clamped to 1.0) |
+
+The system is slamming back and forth. This is the P-controller equivalent of bang-bang — full power in alternating directions.
+
+### Tuning kP: the doubling heuristic
+
+A practical starting procedure:
+
+1. **Start at zero**: kP = 0, verify the mechanism doesn't move (it shouldn't — zero output).
+2. **Set a reachable setpoint**: something you'd use in competition.
+3. **Double kP** each time: try 0.0001, then 0.0002, then 0.0004, 0.0008, etc.
+4. **Watch for oscillation**: when the mechanism starts to overshoot and ring (oscillate around the setpoint), you've found the oscillation threshold.
+5. **Halve kP**: back off by 50% from the oscillating value. This is your starting point for further tuning.
+
+After halving, the system should respond reasonably fast without oscillating. The remaining steady-state error will be addressed in later lessons with the I term.
+
+<Note>
+When testing kP values, always command the mechanism from a consistent starting state (e.g., from rest to setpoint) so you're comparing apples to apples. If you start from different initial conditions each time, the response will look different.
+</Note>
+
+### Java implementation
+
+```java
+public class ProportionalController {
+    private final double kP;
+
+    public ProportionalController(double kP) {
+        this.kP = kP;
+    }
+
+    public double calculate(double measurement, double setpoint) {
+        double error = setpoint - measurement;
+        return kP * error;
+    }
+}
+```
+
+In practice you'd clamp the output to [-1, 1] before sending to a motor controller:
+
+```java
+public double calculate(double measurement, double setpoint) {
+    double error = setpoint - measurement;
+    double output = kP * error;
+    return Math.max(-1.0, Math.min(1.0, output)); // clamp to motor range
+}
+```
+
+WPILib's PIDController already handles clamping if you set output limits with `enableContinuousInput()` or use it in a `ProfiledPIDController`. For a simple P-only controller, rolling your own is fine.
+
+### Real FRC example: arm position control
+
+```java
+public class ArmSubsystem extends SubsystemBase {
+    private final CANSparkMax motor = new CANSparkMax(5, MotorType.kBrushless);
+    private final AbsoluteEncoder encoder = motor.getAbsoluteEncoder(Type.kDutyCycle);
+    private final double kP = 0.015;
+    private double targetDegrees = 0.0;
+
+    public void setTarget(double degrees) {
+        targetDegrees = degrees;
+    }
+
+    @Override
+    public void periodic() {
+        double measurement = encoder.getPosition() * 360.0; // convert to degrees
+        double error = targetDegrees - measurement;
+        double output = kP * error;
+        output = Math.max(-0.5, Math.min(0.5, output)); // limit arm speed
+        motor.set(output);
+    }
+}
+```
+
+This arm will track the target position, slowing as it approaches. It will have a small steady-state error if the arm has friction or gravity load — but for a first pass at competition code, this is often good enough.
+
+<Warn>
+Always add output limits (clamp the output) for arms and elevators. An unclamped P controller at startup with a large initial error will command full power to your arm, which can break mechanisms or injure people. Use Math.max/Math.min or WPILib's setOutputRange() to cap the maximum output.
+</Warn>
+
+## Key takeaways
+
+- Proportional control: `output = kP * error`. Output scales continuously with error — no sudden switching.
+- Large kP → fast response but risk of oscillation. Small kP → slow response and large steady-state error.
+- **Steady-state error** is an inevitable consequence of proportional-only control. The controller settles at a point where its small output exactly balances the opposing disturbance force, which is slightly short of the setpoint.
+- The doubling-then-halving tuning approach: increase kP until oscillation appears, then back off 50%.
+- Always clamp output to a safe range before commanding motors.
+
+## Common confusions
+
+**"If I use a huge kP, won't the steady-state error be zero?"**
+
+In theory, an infinite kP would have zero steady-state error (any error would produce infinite output). In practice, the output is clamped to [-1, 1], and above the oscillation threshold the system never reaches steady state — it keeps ringing. There's a practical ceiling on kP.
+
+**"My proportional controller has zero error but the mechanism is still moving."**
+
+This suggests the sensor is lagging (encoder is slow to update) or the mechanism has enough inertia that it's coasting through the setpoint. At zero error the output is zero, so the mechanism's inertia is carrying it past. This is the overshoot problem. Solution: tune kP lower, or add a D term (covered in the next lesson).
+
+**"My kP is very small (like 0.00001) and nothing happens."**
+
+At a very small kP, the output is so tiny it can't overcome static friction or dead band in the motor controller. Motor controllers typically ignore outputs below ~3-5% (their own dead band). Try increasing kP by a factor of 10 until you see the motor respond, then tune from there.
+
+**"Does kP have to be positive?"**
+
+kP should be positive. A positive error (below setpoint) should produce a positive (forward) output, and a negative error (above setpoint) should produce a negative output. If your motor is wired backwards, invert the motor controller rather than using a negative kP — negative kP will work but makes everything conceptually confusing.
+
+## Challenge
+
+<Try>
+Compute the proportional controller output for three scenarios given a fixed kP. Then identify which kP value would cause the arm to oscillate based on the resulting output magnitude.
+
+Given: an arm where output of 1.0 = full power forward, -1.0 = full power backward.
+All three scenarios use the same setpoint of 90 degrees.
+</Try>
+
+<CodeEditor
+  client:load
+  starterCode={`public class ProportionalChallenge {
+    public static double pControl(double kP, double measurement, double setpoint) {
+        // TODO: implement the P controller
+        // output = kP * (setpoint - measurement)
+        return 0.0;
+    }
+
+    public static void main(String[] args) {
+        double setpoint = 90.0; // degrees
+
+        // Scenario A: kP = 0.02, measurement = 45 degrees (far from setpoint)
+        double outA = pControl(0.02, 45.0, setpoint);
+        System.out.printf("kP=0.02, error=45 deg -> output = %.3f%n", outA);
+
+        // Scenario B: kP = 0.02, measurement = 87 degrees (close to setpoint)
+        double outB = pControl(0.02, 87.0, setpoint);
+        System.out.printf("kP=0.02, error=3 deg  -> output = %.3f%n", outB);
+
+        // Scenario C: kP = 0.10, measurement = 45 degrees (same position, higher gain)
+        double outC = pControl(0.10, 45.0, setpoint);
+        System.out.printf("kP=0.10, error=45 deg -> output = %.3f%n", outC);
+
+        // Which scenario likely causes oscillation?
+        // Print the scenario letter with output > 1.0 (would need clamping)
+        String oscillationRisk = (Math.abs(outA) > 1.0) ? "A" :
+                                 (Math.abs(outB) > 1.0) ? "B" :
+                                 (Math.abs(outC) > 1.0) ? "C" : "none";
+        System.out.println("Scenario needing output clamp: " + oscillationRisk);
+    }
+}`}
+  testCases={[
+    { label: "kP=0.02 error=45 yields 0.900", expected: "kP=0.02, error=45 deg -> output = 0.900" },
+    { label: "kP=0.02 error=3 yields 0.060", expected: "kP=0.02, error=3 deg  -> output = 0.060" },
+    { label: "kP=0.10 error=45 yields 4.500", expected: "kP=0.10, error=45 deg -> output = 4.500" },
+    { label: "Scenario C needs clamping", expected: "Scenario needing output clamp: C" }
+  ]}
+  hint="output = kP * (setpoint - measurement). An output above 1.0 would need clamping and indicates a gain that could cause oscillation."
+/>
+
+<Quiz
+  client:load
+  question="A P controller with kP=0.005 is controlling a shooter at a setpoint of 4000 RPM. The shooter stabilizes at 3960 RPM and won't go higher. What is the steady-state error, and what is the controller's output at that stable point?"
+  options={[
+    "Error = 40 RPM, output = 0.2 (20%)",
+    "Error = -40 RPM, output = -0.2",
+    "Error = 0 RPM, output = 0.0",
+    "Error = 40 RPM, output = 0.0"
+  ]}
+  correct={0}
+  explanation="At 3960 RPM: error = 4000 - 3960 = 40 RPM. Output = 0.005 * 40 = 0.2 (20%). The motor runs at 20% output — just enough to maintain 3960 RPM against friction. This is steady-state error: the system is stable but not at setpoint."
+/>
+
+## What's next
+
+Proportional control is smooth and intuitive, but it always leaves a residual steady-state error — the controller can only produce output when there's error, and at zero error it produces nothing. The next lesson introduces the Integral term, which accumulates error over time to push through that residual gap, and the Derivative term, which senses the rate of change to dampen overshoot. Together with P, they form the complete PID controller used on virtually every competitive FRC robot.

@@ -1,0 +1,300 @@
+---
+track: fundamentals
+lesson: 8
+title: Classes and Objects
+prereqs: [fundamentals-07]
+objectives:
+  - Define a class with fields, a constructor, and methods
+  - Create an instance of a class using the new keyword
+  - Access fields and call methods using dot notation
+  - Explain the difference between a class (blueprint) and an object (instance)
+---
+
+import Key from '../../../components/Key.astro';
+import Try from '../../../components/Try.astro';
+import Note from '../../../components/Note.astro';
+import Warn from '../../../components/Warn.astro';
+import CodeTrace from '../../../components/demos/CodeTrace.jsx';
+import Quiz from '../../../components/demos/Quiz.jsx';
+import CodeEditor from '../../../components/demos/CodeEditor.jsx';
+
+## Hook
+
+Your robot has three motors. Each motor has a CAN ID, a current speed, and a max speed limit. So you create variables:
+
+```java
+int motor1Id = 1;
+double motor1Speed = 0.0;
+double motor1MaxSpeed = 0.8;
+
+int motor2Id = 2;
+double motor2Speed = 0.0;
+double motor2MaxSpeed = 1.0;
+
+int motor3Id = 5;
+double motor3Speed = 0.0;
+double motor3MaxSpeed = 0.6;
+```
+
+Now you want to write a function to set a motor's speed without exceeding its limit. Which variables do you pass? How does the function know which motor it's operating on?
+
+This is exactly the problem classes solve. Instead of three sets of parallel variables, you create one type — `Motor` — that bundles its ID, speed, and limit together. Then you create three `Motor` objects.
+
+## Core concept
+
+<Key>
+A class is a blueprint that defines what data (fields) and behavior (methods) a type has. An object is a specific instance of that class, created with `new`, with its own copy of the data.
+</Key>
+
+## Defining a class
+
+Here's a `Motor` class that captures the three related values:
+
+```java
+public class Motor {
+    // Fields — data that every Motor has
+    int canId;
+    double speed;
+    double maxSpeed;
+
+    // Constructor — runs when you write `new Motor(...)`
+    Motor(int id, double limit) {
+        canId    = id;
+        speed    = 0.0;      // starts stopped
+        maxSpeed = limit;
+    }
+
+    // Method — behavior a Motor can perform
+    void set(double requestedSpeed) {
+        if (requestedSpeed > maxSpeed)  requestedSpeed = maxSpeed;
+        if (requestedSpeed < -maxSpeed) requestedSpeed = -maxSpeed;
+        speed = requestedSpeed;
+    }
+
+    double getSpeed() {
+        return speed;
+    }
+}
+```
+
+### Anatomy of a class
+
+| Part | What it is | Example |
+|---|---|---|
+| **Field** | A variable that belongs to the object | `double speed;` |
+| **Constructor** | A special method called by `new`; sets up initial state | `Motor(int id, double limit) { ... }` |
+| **Method** | A function that operates on the object's own data | `void set(double requestedSpeed) { ... }` |
+
+## Creating instances with `new`
+
+A class definition is just the blueprint. To actually use it, you create an **instance**:
+
+```java
+Motor leftDrive  = new Motor(1, 0.8);
+Motor rightDrive = new Motor(2, 0.8);
+Motor intake     = new Motor(5, 0.6);
+```
+
+Each call to `new Motor(...)` runs the constructor and creates a separate object with its own `canId`, `speed`, and `maxSpeed`. Changing `leftDrive.speed` has no effect on `rightDrive.speed` — they are independent.
+
+```
+leftDrive ──→ [ canId=1, speed=0.0, maxSpeed=0.8 ]
+rightDrive ──→ [ canId=2, speed=0.0, maxSpeed=0.8 ]
+intake    ──→ [ canId=5, speed=0.0, maxSpeed=0.6 ]
+```
+
+## Dot notation
+
+You access an object's fields and methods using a dot:
+
+```java
+leftDrive.set(0.7);       // call the set method on leftDrive
+double s = leftDrive.getSpeed();  // 0.7
+
+intake.set(0.9);          // 0.9 > 0.6 maxSpeed → clamped to 0.6
+double is = intake.getSpeed();    // 0.6
+```
+
+The dot means "on this specific object." `leftDrive.speed` is the `speed` field of `leftDrive`. `intake.speed` is a completely separate value.
+
+## The `this` keyword
+
+Inside a method, `this` refers to the object the method was called on. It's needed when a parameter has the same name as a field:
+
+```java
+Motor(int canId, double maxSpeed) {
+    this.canId    = canId;    // this.canId = the field; canId = the parameter
+    this.maxSpeed = maxSpeed;
+    this.speed    = 0.0;
+}
+```
+
+Without `this`, `canId = canId` would just assign the parameter to itself — the field would never get set.
+
+<Note>
+Many Java developers use `this.field` everywhere in constructors to make the distinction explicit, even when there's no naming conflict. This is a style choice, not a requirement.
+</Note>
+
+## FRC context: a Sensor class
+
+In real WPILib code, you're already using classes constantly — `CANSparkMax`, `XboxController`, `DigitalInput` are all classes. Here's a simplified sensor class that mirrors what WPILib does internally:
+
+```java
+public class DistanceSensor {
+    private int port;
+    private double lastReading;
+
+    public DistanceSensor(int port) {
+        this.port = port;
+        this.lastReading = 0.0;
+    }
+
+    // In a real sensor this would read hardware;
+    // here we simulate it with a parameter
+    public void update(double rawVolts) {
+        // Convert 0-5V analog signal to 0-3 meter range
+        lastReading = (rawVolts / 5.0) * 3.0;
+    }
+
+    public double getDistanceMeters() {
+        return lastReading;
+    }
+
+    public boolean isObjectNear(double thresholdMeters) {
+        return lastReading < thresholdMeters;
+    }
+}
+```
+
+Using it:
+
+```java
+DistanceSensor frontSensor = new DistanceSensor(0);  // analog port 0
+
+frontSensor.update(2.5);  // 2.5V → 1.5 meters
+System.out.println(frontSensor.getDistanceMeters());  // 1.5
+System.out.println(frontSensor.isObjectNear(2.0));    // true (1.5 < 2.0)
+```
+
+The key insight: the sensor's state (`lastReading`, `port`) is bundled with the operations that use it. You don't pass `lastReading` around as a separate variable — it travels with the object.
+
+## Tracing object method calls
+
+<CodeTrace
+  client:load
+  variables={{ "motor.speed": 0.0, "motor.maxSpeed": 0.8, requested: "?" }}
+  steps={[
+    { code: "motor = new Motor(3, 0.8)",     state: { "motor.speed": 0.0, "motor.maxSpeed": 0.8, requested: "?" },  comment: "constructor runs, speed=0" },
+    { code: "motor.set(0.95)",               state: { "motor.speed": 0.0, "motor.maxSpeed": 0.8, requested: 0.95 }, comment: "set() called, requestedSpeed=0.95" },
+    { code: "0.95 > 0.8? yes",              state: { "motor.speed": 0.0, "motor.maxSpeed": 0.8, requested: 0.8 },  comment: "clamped to 0.8" },
+    { code: "speed = requestedSpeed",        state: { "motor.speed": 0.8, "motor.maxSpeed": 0.8, requested: 0.8 },  comment: "field updated" },
+    { code: "motor.getSpeed()",              state: { "motor.speed": 0.8, "motor.maxSpeed": 0.8, requested: 0.8 },  comment: "returns 0.8" },
+  ]}
+/>
+
+## Multiple objects are independent
+
+A critical point: each object has its own copy of all fields.
+
+```java
+Motor a = new Motor(1, 1.0);
+Motor b = new Motor(2, 1.0);
+
+a.set(0.5);
+// a.speed is 0.5
+// b.speed is still 0.0 — completely unaffected
+```
+
+When you write `a.set(0.5)`, Java runs the `set` method with `this` pointing at `a`. `b`'s fields are untouched.
+
+## Knowledge check
+
+<Quiz
+  client:load
+  question="What is the difference between a class and an object?"
+  options={[
+    "They are the same thing — 'class' and 'object' are interchangeable terms",
+    "A class is the blueprint defining fields and methods; an object is a specific instance created with new",
+    "An object is the blueprint; a class is the instance",
+    "A class holds methods; an object holds only fields"
+  ]}
+  correct={1}
+  explanation="The class is defined once in code (Motor.java). Each call to new Motor(...) creates a separate object — a live instance with its own memory for fields. You can have one class and many objects from it."
+/>
+
+<Quiz
+  client:load
+  question="You have Motor a = new Motor(1, 1.0) and Motor b = new Motor(2, 1.0). You call a.set(0.7). What is b.getSpeed()?"
+  options={[
+    "0.7 — objects share field values",
+    "0.0 — each object has its own independent fields",
+    "Compile error — you can't call set on a",
+    "null"
+  ]}
+  correct={1}
+  explanation="Each object has its own copy of every field. a.set(0.7) sets a's speed field to 0.7. b.speed is still 0.0, unchanged."
+/>
+
+## Key takeaways
+
+- A class defines a type: what fields (data) it has and what methods (behavior) it supports.
+- `new ClassName(args)` creates an instance (object) and calls the constructor to initialize its fields.
+- Each object has its own independent copy of all fields — changing one object's state never affects another.
+- Dot notation (`object.field`, `object.method()`) always operates on that specific object's data.
+
+## Common confusions
+
+**"I wrote `Motor m;` but when I call `m.set(0.5)` I get a NullPointerException."** `Motor m;` declares a variable but doesn't create an object. The variable holds `null` until you assign `m = new Motor(...)`. Always pair declaration with initialization, or assign in the constructor.
+
+**"I changed a field inside a method but the change disappeared."** If you stored the field value in a local variable and modified the local, the field is untouched. Use `this.fieldName = newValue` to write back to the object's field.
+
+## Challenge
+
+<Try>
+Write a `Point` class with `x` and `y` fields (doubles), a constructor, and a `distance` method that computes the distance from this point to another point using the Pythagorean theorem: `sqrt((x2-x1)² + (y2-y1)²)`.
+
+Then use it to compute distances between robot waypoints.
+</Try>
+
+<CodeEditor
+  client:load
+  starterCode={`public class Main {
+
+    static class Point {
+        double x;
+        double y;
+
+        Point(double x, double y) {
+            // initialize fields using this.x and this.y
+        }
+
+        double distance(Point other) {
+            // return the Euclidean distance to 'other'
+            return 0.0; // fix this
+        }
+    }
+
+    public static void main(String[] args) {
+        Point origin = new Point(0.0, 0.0);
+        Point goal   = new Point(3.0, 4.0);
+        Point mid    = new Point(1.5, 2.0);
+
+        // 3-4-5 right triangle: distance should be 5.0
+        System.out.println(origin.distance(goal));   // 5.0
+
+        // distance from goal back to origin is the same
+        System.out.println(goal.distance(origin));   // 5.0
+
+        // distance from origin to mid
+        System.out.printf("%.2f%n", origin.distance(mid)); // 2.50
+    }
+}`}
+  testCases={[
+    { label: "Correct Euclidean distances", expected: "5.0\n5.0\n2.50" },
+  ]}
+  hint="Math.sqrt() computes square root. Math.pow(val, 2) squares a value, or just write (dx * dx + dy * dy). Don't forget to assign this.x = x in the constructor."
+/>
+
+## What's next
+
+In **Lesson 9**, we'll look at enums — a special kind of class used for named constants. Instead of magic numbers like `0`, `1`, `2` for robot modes, enums let you write `RobotMode.TELEOP`, `RobotMode.AUTO`, and `RobotMode.DISABLED`.
