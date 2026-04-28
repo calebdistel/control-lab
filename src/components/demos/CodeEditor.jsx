@@ -3,7 +3,7 @@ import { EditorView, minimalSetup } from 'codemirror';
 import { EditorState, StateEffect, StateField } from '@codemirror/state';
 import { keymap, lineNumbers, highlightActiveLineGutter, highlightActiveLine, Decoration } from '@codemirror/view';
 import { defaultKeymap, historyKeymap, indentWithTab, history } from '@codemirror/commands';
-import { HighlightStyle, syntaxHighlighting, indentOnInput, bracketMatching } from '@codemirror/language';
+import { HighlightStyle, syntaxHighlighting, indentOnInput, bracketMatching, indentUnit } from '@codemirror/language';
 import { closeBrackets } from '@codemirror/autocomplete';
 import { java } from '@codemirror/lang-java';
 import { tags } from '@lezer/highlight';
@@ -289,6 +289,8 @@ export default function CodeEditor({ starterCode = '', testCases = [], hint = ''
           highlightActiveLine(),
           history(),
           indentOnInput(),
+          indentUnit.of('    '),
+          EditorState.tabSize.of(4),
           bracketMatching(),
           closeBrackets(),
           java(),
