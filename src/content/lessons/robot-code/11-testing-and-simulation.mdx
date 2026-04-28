@@ -1,0 +1,377 @@
+---
+track: robot-code
+lesson: 11
+title: Testing and Simulation
+prereqs: [robot-code-05]
+objectives:
+  - Run robot code on a desktop computer using the WPILib simulation framework
+  - Simulate encoder and gyro readings using SimDeviceSim and encoder simulation classes
+  - Drive virtual robot state through DriverStationSim to test mode transitions
+  - Write a JUnit unit test that validates subsystem logic without hardware
+---
+
+import Key from '../../../components/Key.astro';
+import Try from '../../../components/Try.astro';
+import Note from '../../../components/Note.astro';
+import Warn from '../../../components/Warn.astro';
+import Quiz from '../../../components/demos/Quiz.jsx';
+import CodeEditor from '../../../components/demos/CodeEditor.jsx';
+
+## Hook
+
+You write a new autonomous routine at 10 PM the night before competition. You can't deploy to the robot — it's disassembled. You could wait until morning, but that means testing on the field for the first time with 30 seconds on the clock.
+
+Or you simulate it on your laptop right now. The scheduler runs. Commands execute and finish. Encoders advance. The routine either works or it doesn't — and you find out tonight instead of during your first qualifying match.
+
+Simulation is not a replacement for physical testing. It is a tool that lets you catch logic errors, scheduling bugs, and state machine mistakes before you're anywhere near real hardware.
+
+## Core concept
+
+<Key>
+WPILib's simulation framework runs your complete robot program on a desktop JVM. Hardware abstraction layers (HAL) are replaced with simulation equivalents. You control simulated sensors (encoders, gyros, limit switches) programmatically, and the robot code responds exactly as it would on the real hardware.
+</Key>
+
+## How WPILib simulation works
+
+WPILib uses a Hardware Abstraction Layer (HAL) between your code and the physical hardware. On a real roboRIO, the HAL talks to motor controllers and sensors over CAN, DIO, and PWM. In simulation, WPILib swaps in **HALSim** — a simulated HAL that stores values in memory and exposes them via NetworkTables.
+
+```
+Your Robot Code
+      │
+  WPILib API (same classes: DifferentialDrive, Encoder, GyroSim…)
+      │
+   HAL Layer
+      │
+   ┌──┴──────────────────┐
+   │ Real hardware (robot)│   or   │ HALSim (desktop) │
+   └─────────────────────┘        └──────────────────┘
+```
+
+Your robot code doesn't change a single line to run in simulation. WPILib detects whether it's running on a roboRIO or on a desktop JVM at runtime.
+
+## Running simulation
+
+In VS Code with WPILib extension installed:
+
+1. Open the command palette: `Ctrl+Shift+P`
+2. Run: **WPILib: Simulate Robot Code**
+3. Select **Sim GUI** (the graphical simulation interface)
+
+From the terminal:
+```bash
+./gradlew simulateJava
+```
+
+The Sim GUI opens and shows:
+- **Driver Station panel** — enable/disable, select teleop/auto/test mode
+- **Joystick panel** — simulate controller input
+- **NetworkTables viewer** — see SmartDashboard values live
+- **System Console** — stdout from your robot
+
+<Note>
+The roboRIO image version and your WPILib version must match for simulation to work correctly. Keep both up to date using the WPILib installer at the start of each season.
+</Note>
+
+## HALSim and SimDeviceSim
+
+**HALSim** extensions provide simulation objects for built-in hardware. For vendor devices (CTRE, REV) the vendors ship their own sim extensions.
+
+```java
+// In build.gradle — add vendor sim extensions
+dependencies {
+    // Example: CTRE simulation (check vendor docs for current artifact)
+    simulation "com.ctre.phoenix6:simulation:..."
+}
+```
+
+**SimDeviceSim** lets you inspect or drive simulated devices by name:
+
+```java
+import edu.wpi.first.hal.simulation.SimDeviceDataJNI;
+import edu.wpi.first.wpilibj.simulation.SimDeviceSim;
+
+// Access a simulated ADXRS450 gyro
+SimDeviceSim gyroSim = new SimDeviceSim("ADXRS450_Gyro[0]");
+gyroSim.getDouble("Angle").set(45.0);  // force the gyro to read 45 degrees
+```
+
+## Simulating encoders
+
+`EncoderSim` gives you direct control over a simulated `Encoder` object:
+
+```java
+import edu.wpi.first.wpilibj.Encoder;
+import edu.wpi.first.wpilibj.simulation.EncoderSim;
+
+// In your test / simulation support code:
+Encoder leftEncoder = new Encoder(0, 1);  // same as subsystem
+EncoderSim leftEncoderSim = new EncoderSim(leftEncoder);
+
+// Set simulated encoder values
+leftEncoderSim.setDistance(1.5);   // pretend encoder reads 1.5 meters
+leftEncoderSim.setRate(0.75);      // pretend encoder reports 0.75 m/s
+
+// Your subsystem code reads these through the real Encoder object
+System.out.println(leftEncoder.getDistance()); // → 1.5
+```
+
+For **DifferentialDrive** simulation, use `DifferentialDrivetrainSim`:
+
+```java
+import edu.wpi.first.wpilibj.simulation.DifferentialDrivetrainSim;
+import edu.wpi.first.math.system.plant.DCMotor;
+
+DifferentialDrivetrainSim driveSim = new DifferentialDrivetrainSim(
+    DCMotor.getNEO(2),      // 2 NEO motors per side
+    7.29,                   // gearing reduction
+    7.5,                    // moment of inertia (kg*m^2)
+    60.0,                   // robot mass (kg)
+    Units.inchesToMeters(3), // wheel radius
+    0.7112                  // track width (meters)
+);
+
+// In simulationPeriodic():
+driveSim.setInputs(leftMotorVoltage, rightMotorVoltage);
+driveSim.update(0.02);  // 20ms timestep
+
+// Read back simulated state
+double simLeftPos  = driveSim.getLeftPositionMeters();
+double simRightPos = driveSim.getRightPositionMeters();
+double simHeading  = driveSim.getHeading().getDegrees();
+```
+
+## Simulating gyros
+
+```java
+import edu.wpi.first.wpilibj.ADXRS450_Gyro;
+import edu.wpi.first.wpilibj.simulation.ADXRS450_GyroSim;
+
+ADXRS450_Gyro gyro    = new ADXRS450_Gyro();
+ADXRS450_GyroSim gyroSim = new ADXRS450_GyroSim(gyro);
+
+// Force the gyro to a specific angle
+gyroSim.setAngle(90.0);
+
+// Your subsystem reads this through gyro.getAngle()
+System.out.println(gyro.getAngle()); // → 90.0
+```
+
+For NavX (kauaiLabs), REV IMU, or Pigeon2, use the vendor-provided sim class from the vendor simulation library.
+
+## DriverStationSim
+
+`DriverStationSim` lets you programmatically change robot mode in tests, simulating what the FMS does at a competition:
+
+```java
+import edu.wpi.first.wpilibj.simulation.DriverStationSim;
+
+// Enable the robot in autonomous mode
+DriverStationSim.setAutonomous(true);
+DriverStationSim.setEnabled(true);
+DriverStationSim.notifyNewData();
+
+// Switch to teleop
+DriverStationSim.setAutonomous(false);
+DriverStationSim.notifyNewData();
+
+// Disable
+DriverStationSim.setEnabled(false);
+DriverStationSim.notifyNewData();
+```
+
+Always call `notifyNewData()` after changing state — this signals the robot code that driver station data has changed.
+
+## Unit testing with JUnit
+
+WPILib projects include JUnit 5 by default. Unit tests live in `src/test/java/`:
+
+```
+src/
+  main/java/frc/robot/
+    subsystems/ArmSubsystem.java
+  test/java/frc/robot/
+    subsystems/ArmSubsystemTest.java
+```
+
+Run tests:
+```bash
+./gradlew test
+```
+
+### Example: testing subsystem state logic
+
+Test pure logic (state machines, calculations) without simulation:
+
+```java
+import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.*;
+
+class ShooterMathTest {
+    @Test
+    void testRpmAtTargetReturnsTrueWithinBand() {
+        // Pure math — no hardware involved
+        double target = 3000.0;
+        double band   = 100.0;
+
+        assertTrue(isAtTarget(2950.0, target, band));
+        assertTrue(isAtTarget(3000.0, target, band));
+        assertFalse(isAtTarget(2899.0, target, band));
+        assertFalse(isAtTarget(3101.0, target, band));
+    }
+
+    boolean isAtTarget(double actual, double target, double band) {
+        return Math.abs(actual - target) <= band;
+    }
+}
+```
+
+### Example: testing with simulation infrastructure
+
+For tests that involve WPILib objects, you must initialize the HAL:
+
+```java
+import edu.wpi.first.hal.HAL;
+import edu.wpi.first.wpilibj.simulation.EncoderSim;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.*;
+
+class DriveSubsystemTest {
+    private DriveSubsystem drive;
+
+    @BeforeEach
+    void setup() {
+        HAL.initialize(500, 0);  // required before any WPILib object
+        drive = new DriveSubsystem();
+    }
+
+    @Test
+    void encoderReadsAfterSimUpdate() {
+        EncoderSim leftSim = new EncoderSim(drive.getLeftEncoder());
+        leftSim.setDistance(2.5);
+
+        assertEquals(2.5, drive.getLeftPositionMeters(), 0.001);
+    }
+
+    @Test
+    void robotStopsWhenDisabled() {
+        DriverStationSim.setEnabled(false);
+        DriverStationSim.notifyNewData();
+        drive.periodic();  // one loop tick
+
+        assertEquals(0.0, drive.getLeftSpeed(), 0.001);
+        assertEquals(0.0, drive.getRightSpeed(), 0.001);
+    }
+}
+```
+
+<Warn>
+Always call `HAL.initialize(500, 0)` in `@BeforeEach` when testing code that creates WPILib objects (Encoder, DifferentialDrive, etc.). Without it, the test will crash with a HAL not initialized exception.
+</Warn>
+
+## What to test vs what to simulate
+
+| Technique | Best for |
+|---|---|
+| **JUnit (pure logic)** | Math utilities, state machine transitions, command group ordering, PID math |
+| **JUnit + HAL sim** | Subsystem methods that read/write sensors, encoder-based isFinished() |
+| **Full simulation (Sim GUI)** | Full match sequences, driver input, autonomous routine tuning, scheduler behavior |
+| **Physical hardware** | Mechanical tuning, PID gains, sensor calibration, radio/CAN behavior |
+
+Don't try to unit-test things that depend on physical dynamics (PID tuning, arm balance). Simulate or test on hardware.
+
+<Quiz
+  client:load
+  question="What must you call at the start of a JUnit test that creates WPILib objects like Encoder or DifferentialDrive?"
+  options={[
+    "WPILib.init()",
+    "HAL.initialize(500, 0)",
+    "SimDeviceSim.startSimulation()",
+    "Robot.robotInit()"
+  ]}
+  correct={1}
+  explanation="WPILib objects make HAL (Hardware Abstraction Layer) calls when constructed. In simulation, HAL.initialize(500, 0) sets up the simulation HAL. Without it, the JVM throws an UnsatisfiedLinkError or similar HAL not initialized error when any WPILib hardware object is created."
+/>
+
+<Quiz
+  client:load
+  question="You want to test that your DriveDistanceCommand finishes when the encoder reads 2 meters. Which approach is most appropriate?"
+  options={[
+    "Deploy to the robot and drive forward until it stops",
+    "Create an EncoderSim, set its distance to 2.0, run one scheduler tick, and assert the command finished",
+    "Use Thread.sleep(3000) and assume the robot drove 2 meters in 3 seconds",
+    "Check the source code manually to verify isFinished() uses getDistance()"
+  ]}
+  correct={1}
+  explanation="EncoderSim lets you set the simulated encoder distance to any value without hardware. Run a scheduler tick after setting the distance to 2.0 and assert that isFinished() returns true. This is deterministic, instant, and repeatable — the gold standard for testing sensor-based command completion."
+/>
+
+## Key takeaways
+
+- WPILib's HAL abstraction lets the same robot code run on a desktop JVM via `./gradlew simulateJava` — no code changes needed.
+- `EncoderSim`, `ADXRS450_GyroSim`, and `DifferentialDrivetrainSim` let you inject simulated sensor values.
+- `DriverStationSim` controls robot mode (enabled/disabled, auto/teleop) programmatically.
+- JUnit unit tests catch logic errors (state machines, math, command sequencing) in milliseconds.
+- Tests that touch WPILib objects require `HAL.initialize(500, 0)` in `@BeforeEach`.
+- Test pure logic with JUnit, test sensor integration with HAL sim, tune PID on real hardware.
+
+## Common confusions
+
+**"simulateJava fails immediately."** Make sure your `build.gradle` includes the simulation GUI dependency. WPILib new-project templates include it; manual setups may not. Check for `simulationRelease` or `simulation` configuration blocks in `build.gradle`.
+
+**"EncoderSim can't find my encoder."** `EncoderSim` must be constructed with the same `Encoder` instance your subsystem uses — pass a reference or expose a `getLeftEncoder()` accessor from the subsystem.
+
+**"Tests pass in isolation but fail when run together."** WPILib simulation state is global. Encoder channel 0 used in test A still has its simulated value when test B runs. Reset simulation state in `@BeforeEach` or use `@AfterEach` to reset hardware objects.
+
+**"My simulation runs much faster than real time."** The desktop JVM isn't clock-limited the way the roboRIO is. If your code uses `Timer` with wall-clock time, it may behave differently. Use `Timer.getFPGATimestamp()` in tests, or inject a mock clock.
+
+## Challenge
+
+<Try>
+Implement the isAtTarget() logic for a shooter subsystem and write test assertions that verify it correctly handles values within and outside the RPM band. Pure Java — no hardware.
+</Try>
+
+<CodeEditor
+  client:load
+  starterCode={`// Simulate a shooter "at speed" check.
+// isAtTarget returns true when the actual RPM is within 'band' of target.
+
+public class ShooterTest {
+
+    /**
+     * Returns true if actual is within band of target (inclusive).
+     * e.g., isAtTarget(2950, 3000, 100) → true  (within 50 RPM)
+     *       isAtTarget(2899, 3000, 100) → false (101 RPM off)
+     */
+    static boolean isAtTarget(double actualRpm, double targetRpm, double band) {
+        // TODO: implement
+        return false;
+    }
+
+    public static void main(String[] args) {
+        double target = 3000.0;
+        double band   = 100.0;
+
+        // Print true/false for each assertion
+        System.out.println(isAtTarget(3000, target, band));  // true  - exact
+        System.out.println(isAtTarget(2900, target, band));  // true  - lower boundary
+        System.out.println(isAtTarget(3100, target, band));  // true  - upper boundary
+        System.out.println(isAtTarget(2899, target, band));  // false - just outside low
+        System.out.println(isAtTarget(3101, target, band));  // false - just outside high
+        System.out.println(isAtTarget(0,    target, band));  // false - not spinning
+    }
+}`}
+  testCases={[
+    { label: "exact target",          expected: "true"  },
+    { label: "lower boundary",        expected: "true"  },
+    { label: "upper boundary",        expected: "true"  },
+    { label: "just outside low",      expected: "false" },
+    { label: "just outside high",     expected: "false" },
+    { label: "not spinning",          expected: "false" }
+  ]}
+  hint="Math.abs(actualRpm - targetRpm) <= band — the distance between actual and target must be less than or equal to the band."
+/>
+
+## What's next
+
+In **Lesson 12: Competition Readiness**, we zoom out from individual features and look at the full match lifecycle — pre-match checklists, brownout prevention, fast deploy workflows, and how to make the robot degrade gracefully when things go wrong at the event.

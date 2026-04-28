@@ -1,0 +1,421 @@
+---
+track: software-engineering
+lesson: 5
+title: Testing Robot Code
+prereqs: [software-engineering-02]
+objectives:
+  - Explain why robot code is difficult to test and how the I/O abstraction layer removes that barrier
+  - Write a JUnit test that asserts subsystem behavior using a mock I/O implementation
+  - Distinguish between unit tests (logic) and integration tests (full hardware simulation with HALSim)
+  - Identify which parts of robot code are worth unit testing and which should be validated on hardware
+---
+
+import Key from '../../../components/Key.astro';
+import Try from '../../../components/Try.astro';
+import Note from '../../../components/Note.astro';
+import Warn from '../../../components/Warn.astro';
+import Quiz from '../../../components/demos/Quiz.jsx';
+import CodeEditor from '../../../components/demos/CodeEditor.jsx';
+
+## Hook
+
+You change one line in your arm subsystem at 11 PM the night before competition. You deploy it. The arm overshoots and slams into the frame. You spend two hours repairing the robot instead of sleeping.
+
+A thirty-second test run on your laptop would have caught this. But running the test requires the robot. The robot is in the pit. The pit is at competition. So you skipped testing.
+
+This is a solvable problem. The I/O abstraction from Lesson 02 exists precisely so you can run tests without hardware. This lesson shows you how.
+
+## Core concept
+
+<Key>
+Robot code is hard to test because it depends on hardware. Break that dependency by testing against a mock I/O implementation instead of real hardware. JUnit provides the assertion framework. WPILib's HALSim provides a simulated hardware layer for integration tests. Test your logic; trust your hardware to work as documented.
+</Key>
+
+## Why robot code is hard to test
+
+Typical robot code:
+
+```java
+public class ArmSubsystem extends SubsystemBase {
+    private final CANSparkMax motor = new CANSparkMax(3, MotorType.kBrushless);
+    // ...
+}
+```
+
+Running this on a laptop fails because:
+1. `CANSparkMax` loads native CAN libraries that only exist on the roboRIO.
+2. Even if it loaded, there's no physical motor to talk to.
+3. WPILib's robot lifecycle (`robotInit`, `teleopPeriodic`) isn't started.
+
+The naive solution is "only test on the robot." The real solution is to make the hardware dependency optional.
+
+## The testing strategy
+
+```
+Unit tests  →  Mock I/O  →  No hardware needed, runs anywhere
+                              Tests: limits, state logic, math
+
+Integration →  HALSim    →  Simulated hardware layer on desktop
+tests                        Tests: scheduler behavior, command sequencing
+
+Hardware    →  Real robot →  Tests: sensor calibration, PID tuning,
+validation                    mechanical limits, CAN latency
+```
+
+Only the third tier requires a robot. The first two run on any developer laptop, in CI/CD, or on a Chromebook at 2 AM in a hotel room.
+
+## Setting up JUnit in a WPILib project
+
+WPILib projects include JUnit 4 by default. Your `build.gradle` already has:
+
+```groovy
+// build.gradle (already present in WPILib template)
+dependencies {
+    testImplementation 'junit:junit:4.13.2'
+}
+```
+
+Tests live in `src/test/java/` mirroring the structure of `src/main/java/`:
+
+```
+src/
+  main/java/frc/robot/subsystems/ArmSubsystem.java
+  test/java/frc/robot/subsystems/ArmSubsystemTest.java
+```
+
+Run tests with:
+
+```bash
+./gradlew test
+```
+
+Results appear in `build/reports/tests/test/index.html`.
+
+## Writing your first subsystem unit test
+
+With the I/O pattern from Lesson 02, writing a test is straightforward. You use the mock I/O instead of the real hardware implementation:
+
+```java
+// ArmSubsystemTest.java
+import static org.junit.Assert.*;
+import org.junit.Before;
+import org.junit.Test;
+
+public class ArmSubsystemTest {
+    private ArmIOMock mockIO;
+    private ArmSubsystem arm;
+
+    @Before  // runs before each test method
+    public void setUp() {
+        mockIO = new ArmIOMock();
+        arm = new ArmSubsystem(mockIO);
+    }
+
+    @Test
+    public void testInitialAngleIsZero() {
+        assertEquals(0.0, arm.getAngleDegrees(), 0.001);
+    }
+
+    @Test
+    public void testSetTargetAngleClampedToMax() {
+        arm.setTargetAngle(999.0);  // way above max
+        // Subsystem should clamp to 180°
+        assertEquals(180.0, arm.getTargetAngle(), 0.001);
+    }
+
+    @Test
+    public void testSetTargetAngleClampedToMin() {
+        arm.setTargetAngle(-50.0);  // below zero
+        assertEquals(0.0, arm.getTargetAngle(), 0.001);
+    }
+
+    @Test
+    public void testAtTargetWhenWithinTolerance() {
+        mockIO.setAngle(90.0);      // simulate arm already at 90°
+        arm.setTargetAngle(90.5);   // target within 2° tolerance
+        assertTrue(arm.atTarget());
+    }
+
+    @Test
+    public void testNotAtTargetWhenFarAway() {
+        mockIO.setAngle(0.0);
+        arm.setTargetAngle(90.0);
+        assertFalse(arm.atTarget());
+    }
+}
+```
+
+The mock:
+
+```java
+// ArmIOMock.java — used in tests, not in production
+public class ArmIOMock implements ArmIO {
+    private double angleDegrees = 0.0;
+    private double appliedVolts = 0.0;
+
+    @Override
+    public void setVoltage(double volts) {
+        appliedVolts = volts;
+    }
+
+    @Override
+    public double getAngleDegrees() {
+        return angleDegrees;
+    }
+
+    @Override
+    public double getVelocityDegreesPerSec() {
+        return 0.0;
+    }
+
+    // Test-only control: set the simulated position directly
+    public void setAngle(double degrees) {
+        angleDegrees = degrees;
+    }
+
+    public double getAppliedVolts() {
+        return appliedVolts;
+    }
+}
+```
+
+<Note>
+The mock doesn't simulate physics — it's not supposed to. Its job is to let tests control the inputs and inspect the outputs. Physics simulation lives in `ArmIOSim` for the robot simulator.
+</Note>
+
+## Testing command logic
+
+Commands can be tested in isolation using JUnit without the full robot scheduler:
+
+```java
+public class ArmToPositionCommandTest {
+    private ArmIOMock mockIO;
+    private ArmSubsystem arm;
+
+    @Before
+    public void setUp() {
+        mockIO = new ArmIOMock();
+        arm = new ArmSubsystem(mockIO);
+    }
+
+    @Test
+    public void testCommandFinishesWhenAtTarget() {
+        ArmToPositionCommand cmd = new ArmToPositionCommand(arm, 90.0);
+        cmd.initialize();
+
+        // Simulate arm moving to target
+        mockIO.setAngle(89.0);
+        cmd.execute();
+        assertFalse("Should not be finished yet", cmd.isFinished());
+
+        mockIO.setAngle(90.5);  // within 2° tolerance
+        cmd.execute();
+        assertTrue("Should be finished at target", cmd.isFinished());
+    }
+
+    @Test
+    public void testCommandStopsMotorOnInterrupt() {
+        ArmToPositionCommand cmd = new ArmToPositionCommand(arm, 90.0);
+        cmd.initialize();
+        cmd.execute();
+        cmd.end(true);  // interrupted = true
+
+        // Voltage should be zero after interrupt
+        assertEquals(0.0, mockIO.getAppliedVolts(), 0.001);
+    }
+}
+```
+
+This tests the command's lifecycle logic — `initialize`, `execute`, `isFinished`, `end` — without touching a scheduler or a motor controller.
+
+## HALSim for integration tests
+
+For tests that need the WPILib infrastructure (scheduler, subsystem registration, `periodic()` calls), use HALSim:
+
+```java
+// Requires HALSim to be on the test classpath
+// HALUtil.initialize() starts a simulated HAL
+import edu.wpi.first.hal.HAL;
+import edu.wpi.first.wpilibj.simulation.SimHooks;
+
+public class SchedulerIntegrationTest {
+    @Before
+    public void setUp() {
+        // Initialize simulated HAL
+        assertTrue(HAL.initialize(500, 0));
+        // Enable robot in teleop
+        DriverStationSim.setEnabled(true);
+        DriverStationSim.setAutonomous(false);
+        DriverStationSim.notifyNewData();
+    }
+
+    @Test
+    public void testCommandRunsThroughScheduler() {
+        ArmIOMock mockIO = new ArmIOMock();
+        ArmSubsystem arm = new ArmSubsystem(mockIO);
+        CommandScheduler scheduler = CommandScheduler.getInstance();
+
+        ArmToPositionCommand cmd = new ArmToPositionCommand(arm, 90.0);
+        cmd.schedule();
+
+        // Run the scheduler one tick
+        scheduler.run();
+        // Command should be active
+        assertTrue(scheduler.isScheduled(cmd));
+
+        // Simulate arm reaching target
+        mockIO.setAngle(90.0);
+        scheduler.run();
+        // Command should have finished
+        assertFalse(scheduler.isScheduled(cmd));
+
+        scheduler.cancelAll();
+    }
+}
+```
+
+<Warn>
+Always call `CommandScheduler.getInstance().cancelAll()` and reset state at the end of integration tests. The scheduler is a singleton — leaked state from one test contaminates the next.
+</Warn>
+
+## What to test vs what to skip
+
+| Test in JUnit | Validate on hardware |
+|---|---|
+| Limit clamping logic | PID gain tuning |
+| State machine transitions | Sensor calibration |
+| Command lifecycle (init/execute/isFinished/end) | CAN latency and timing |
+| Math: feedforward, conversions, unit math | Mechanism physical limits |
+| Error handling (what if sensor returns NaN?) | Sensor accuracy under vibration |
+| Trigger composition logic | Button feel and debounce timing |
+
+**The rule:** test the *logic* you wrote. Trust the hardware to do what the datasheet says. You're not testing REV's motor controller firmware — you're testing your code.
+
+## Practical test structure for FRC
+
+A good test suite for an FRC robot has:
+
+1. **One test class per Subsystem** — tests clamping, state transitions, `periodic()` telemetry (check that `SmartDashboard.putNumber` was called).
+2. **One test class per Command** — tests lifecycle, `isFinished()` conditions, `end(interrupted)` cleanup.
+3. **One integration test class for auto routines** — verifies that the composed sequence reaches each step using HALSim.
+
+Keep tests fast. If a test takes more than a second, it's doing too much — break it up or move it to hardware validation.
+
+## Key takeaways
+
+- Hardware dependency is the root cause of untestable robot code. The I/O interface removes it.
+- A mock I/O object lets tests control simulated sensor values and inspect motor outputs without any real hardware.
+- JUnit 4 is included in all WPILib projects. Tests live in `src/test/java/` and run with `./gradlew test`.
+- Test command lifecycle (`initialize`, `execute`, `isFinished`, `end`) directly — no scheduler needed for unit tests.
+- HALSim enables integration tests with the full WPILib scheduler running on a desktop.
+- Test logic you wrote; trust hardware docs for hardware behavior.
+
+## Common confusions
+
+**"My test throws 'HAL not initialized'."** You're running a unit test that instantiates a real WPILib hardware object (like `PWMMotorController`). You either need HALSim set up, or — better — you should be using a mock I/O and not touching real hardware objects in unit tests at all.
+
+**"My mock doesn't simulate the physics, so my PID test fails."** Mocks don't simulate physics and shouldn't. Test that the PID *calls setVoltage* correctly given an error input — not that the mechanism actually moves to the target.
+
+**"Two tests interfere with each other."** The `CommandScheduler` is a static singleton. Always call `CommandScheduler.getInstance().cancelAll()` in a `@After` method.
+
+**"Should I test SmartDashboard calls?"** Only if you rely on them (e.g., for dashboard-driven mode switching). For telemetry-only logging, skip the test — the value of the test is lower than the maintenance cost.
+
+## Challenge
+
+<Try>
+Write a unit test for an `IntakeSubsystem` that verifies:
+1. `runIntake()` sets motor speed to 0.8 via the mock.
+2. `stopIntake()` sets motor speed to 0.0.
+3. `hasPiece()` returns false initially, and true after the mock sensor is set.
+4. If `runIntake()` is called when `hasPiece()` is true, the motor speed should stay at 0.0 (the subsystem refuses to run when it already has a piece).
+
+Before writing: which behaviors are subsystem *logic* (worth testing) and which are hardware (trust the mock)?
+</Try>
+
+<CodeEditor
+  client:load
+  starterCode={`// Unit test for IntakeSubsystem using a mock I/O.
+// Run assertions with assertEquals / assertTrue / assertFalse patterns.
+// Print PASS or FAIL for each test case.
+
+interface IntakeIO {
+    void setMotorSpeed(double speed);
+    boolean getPieceSensor();
+}
+
+class IntakeIOMock implements IntakeIO {
+    double motorSpeed = 0.0;
+    boolean piecePresent = false;
+
+    @Override public void setMotorSpeed(double speed) { motorSpeed = speed; }
+    @Override public boolean getPieceSensor() { return piecePresent; }
+}
+
+class IntakeSubsystem {
+    private final IntakeIO io;
+
+    IntakeSubsystem(IntakeIO io) { this.io = io; }
+
+    public void runIntake() {
+        if (!hasPiece()) {          // refuse to run if already holding
+            io.setMotorSpeed(0.8);
+        }
+    }
+
+    public void stopIntake() {
+        io.setMotorSpeed(0.0);
+    }
+
+    public boolean hasPiece() {
+        return io.getPieceSensor();
+    }
+}
+
+public class IntakeSubsystemTest {
+
+    static void assertEquals(double expected, double actual, String testName) {
+        if (Math.abs(expected - actual) < 0.001) {
+            System.out.println("PASS: " + testName);
+        } else {
+            System.out.println("FAIL: " + testName + " (expected " + expected + ", got " + actual + ")");
+        }
+    }
+
+    static void assertTrue(boolean condition, String testName) {
+        System.out.println(condition ? "PASS: " + testName : "FAIL: " + testName);
+    }
+
+    public static void main(String[] args) {
+        // Test 1: runIntake sets speed to 0.8
+        IntakeIOMock mock1 = new IntakeIOMock();
+        IntakeSubsystem intake1 = new IntakeSubsystem(mock1);
+        intake1.runIntake();
+        assertEquals(0.8, mock1.motorSpeed, "runIntake sets speed to 0.8");
+
+        // Test 2: stopIntake sets speed to 0.0
+        // TODO: create mock2 + intake2, run the intake, then stop it, assert speed = 0.0
+
+        // Test 3: hasPiece is false initially
+        // TODO: create mock3 + intake3, assert hasPiece() is false
+
+        // Test 4: hasPiece is true after mock sensor set
+        // TODO: set mock piecePresent = true, assert hasPiece() is true
+
+        // Test 5: runIntake does NOT run when piece already present
+        // TODO: create mock5 + intake5, set piece present, call runIntake(),
+        //       assert motor speed stayed at 0.0
+    }
+}`}
+  testCases={[
+    { label: "runIntake sets speed to 0.8", expected: "PASS: runIntake sets speed to 0.8" },
+    { label: "stopIntake sets speed to 0.0", expected: "PASS: stopIntake sets speed to 0.0" },
+    { label: "hasPiece false initially", expected: "PASS: hasPiece false initially" },
+    { label: "hasPiece true after sensor set", expected: "PASS: hasPiece true after inject" },
+    { label: "runIntake blocked when piece present", expected: "PASS: runIntake blocked when piece present" },
+  ]}
+  hint="Test 2: call intake2.runIntake() then intake2.stopIntake(), assertEquals(0.0, mock2.motorSpeed). Test 3: assertTrue(!intake3.hasPiece()). Test 4: mock4.piecePresent = true, assertTrue(intake4.hasPiece()). Test 5: mock5.piecePresent = true, intake5.runIntake(), assertEquals(0.0, mock5.motorSpeed)."
+/>
+
+## What's next
+
+In **Software Engineering Lesson 06**, we'll cover Logging Best Practices — what to log, what to skip, how to use DataLog and AdvantageKit for post-match debugging, and how to organize your NetworkTables namespaces so your dashboard doesn't become a wall of noise.

@@ -1,0 +1,370 @@
+---
+track: control-systems
+lesson: 12
+title: Elevator Position Control
+prereqs: [control-systems-07]
+objectives:
+  - List the four constants in ElevatorFeedforward and explain what each one compensates for
+  - Compute the feedforward output voltage for an elevator given kS, kG, kV, and a target velocity
+  - Describe the zeroing procedure using a limit switch and explain why it is necessary
+  - Distinguish between soft limits and hard limits and implement both in a WPILib subsystem
+  - Identify and correct common elevator bugs related to motor direction and gear-ratio unit conversion
+---
+
+import Key from '../../../components/Key.astro';
+import Try from '../../../components/Try.astro';
+import Note from '../../../components/Note.astro';
+import Warn from '../../../components/Warn.astro';
+import CodeTrace from '../../../components/demos/CodeTrace.jsx';
+import Quiz from '../../../components/demos/Quiz.jsx';
+import CodeEditor from '../../../components/demos/CodeEditor.jsx';
+
+## Hook
+
+You command the elevator to 1.0 meter. It goes to 0.87 meters instead — consistently. You tune kP up. Now it reaches 1.0 m but oscillates. You add more feedforward. It overshoots. The underlying issue is not the gains — it is that the encoder reads in motor rotations and nobody converted them to meters. Every setpoint comparison is off, and the PID has been fighting a unit mismatch the entire time. Elevator control is straightforward once units are right and the mechanism is properly zeroed.
+
+## Core concept
+
+<Key>
+An elevator needs four feedforward terms to model its physics: kS to overcome static friction, kG to hold position against gravity (constant — does not depend on height), kV to supply back-EMF voltage during motion, and kA for acceleration. Together these produce a voltage that closely tracks the desired motion, leaving PID only small corrections.
+</Key>
+
+## ElevatorFeedforward constants
+
+| Constant | Meaning | Typical range |
+|----------|---------|---------------|
+| kS | Voltage to overcome static friction (direction-signed) | 0.05–0.3 V |
+| kG | Voltage to hold the elevator at rest against gravity | 0.3–0.8 V |
+| kV | Voltage per unit velocity (back-EMF) | 1–4 V·s/m |
+| kA | Voltage per unit acceleration | 0.01–0.15 V·s^2/m |
+
+The feedforward equation:
+
+```
+voltage = kS * sign(velocity) + kG + kV * velocity + kA * acceleration
+```
+
+Note that `kG` has no position dependence — it is always added (for a single-stage elevator that goes straight up). Whether the carriage is at the bottom or at the top, gravity pulls it down with the same force.
+
+### At rest (holding position)
+
+```
+voltage = kG   (kS = 0 because sign(0) = 0, kV = 0, kA = 0)
+```
+
+The motor must supply exactly `kG` volts to keep the carriage from sliding down.
+
+### During upward motion at constant velocity
+
+```
+voltage = kS + kG + kV * velocity
+```
+
+kS overcoming starting friction, kG fighting gravity, kV matching the back-EMF load.
+
+### Using WPILib
+
+```java
+// kS=0.12, kG=0.48, kV=2.9, kA=0.06
+ElevatorFeedforward ff = new ElevatorFeedforward(0.12, 0.48, 2.9, 0.06);
+
+// calculate() takes velocity and optionally acceleration
+double voltage = ff.calculate(targetVelocityMetersPerSec);
+// or, for a profiled controller:
+double voltage = ff.calculate(currentVelocity, nextVelocity, dtSeconds);
+```
+
+<Note>
+The three-argument `ff.calculate(currentVel, nextVel, dt)` estimates acceleration as (nextVel - currentVel) / dt and includes the kA term. This is more accurate during acceleration phases. The one-argument form assumes zero acceleration.
+</Note>
+
+## Unit conversion — the most important step
+
+Motor encoders report rotations (or sometimes native ticks). You want meters of carriage travel.
+
+```
+meters = motorRotations * (spoolCircumference / gearRatio)
+```
+
+Where:
+- `spoolCircumference` = 2 * pi * spoolRadius (in meters)
+- `gearRatio` = motor rotations per spool rotation (e.g., 12.0 for a 12:1 gearbox)
+
+```java
+double spoolRadiusMeters = 0.0254;   // 1 inch spool radius
+double gearRatio = 12.0;             // 12:1 reduction
+double rotToMeters = (2 * Math.PI * spoolRadiusMeters) / gearRatio;
+
+encoder.setPositionConversionFactor(rotToMeters);       // position in meters
+encoder.setVelocityConversionFactor(rotToMeters / 60);  // velocity in m/s (encoder gives RPM)
+```
+
+After this, `encoder.getPosition()` returns meters and `encoder.getVelocity()` returns meters per second. All setpoints, feedforward constants, and PID calculations can now use real physical units.
+
+<Warn>
+Skipping the velocity conversion factor is a silent bug. `getVelocity()` returns meters per minute if you apply only the position factor (which divides by 2*pi*r but not by 60 for the per-minute → per-second conversion). Your kV will be off by a factor of 60 and the feedforward will be wildly wrong.
+</Warn>
+
+## Zeroing on a limit switch
+
+Relative encoders (e.g., the built-in NEO encoder) accumulate error over time and have no memory of position after power cycle. You need a **zero reference** — a known physical position where you reset the encoder to 0.
+
+The standard approach is a **home limit switch** at the bottom of the elevator travel. On robot initialization:
+
+1. Drive the elevator downward slowly.
+2. When the limit switch triggers, stop the motor and reset the encoder to 0.
+3. All subsequent position commands are relative to this zero.
+
+```java
+DigitalInput bottomLimit = new DigitalInput(1);
+
+// In a zeroing command or state machine:
+public void runZeroing() {
+    if (!bottomLimit.get()) {
+        // Switch not triggered — creep downward
+        motor.setVoltage(-1.5);
+    } else {
+        // Bottom reached — zero the encoder
+        motor.setVoltage(0);
+        encoder.setPosition(0.0);
+        isZeroed = true;
+    }
+}
+```
+
+<Note>
+`DigitalInput.get()` returns `true` when the switch is OPEN (not pressed) and `false` when CLOSED (pressed) — for a normally-open switch wired to ground. Many FRC limit switches are wired this way. Always check your wiring and verify by watching the SmartDashboard value while manually pressing the switch.
+</Note>
+
+### Zeroing on enable vs. every match
+
+Some teams re-zero every time the robot enables (reliable but costs ~1 second). Others zero once in the pits and rely on the encoder holding position (risky if the robot is powered off between matches with the elevator not at the bottom). The safest strategy: **always zero on robot enable** before running any autonomous or teleop setpoints.
+
+## Soft limits vs. hard limits
+
+| Type | Description | When it stops |
+|------|-------------|---------------|
+| Hard limit | Physical stop — bolt, bearing block, frame member | When the mechanism crashes into it |
+| Soft limit (code) | Check in `periodic()` that blocks voltage when outside allowed range | Before the hard limit is reached |
+| Motor controller soft limit | Same concept, enforced in firmware | Before hard limit, even if robot code freezes |
+
+You want all three layers:
+
+```java
+// --- Soft limit in code ---
+double MAX_HEIGHT = 1.5;   // meters
+double MIN_HEIGHT = 0.0;   // meters
+
+double voltage = ff.calculate(sp.velocity) + pid.calculate(measurement, sp.position);
+
+if (encoder.getPosition() >= MAX_HEIGHT && voltage > 0) voltage = 0;
+if (encoder.getPosition() <= MIN_HEIGHT && voltage < 0) voltage = 0;
+
+motor.setVoltage(voltage);
+```
+
+```java
+// --- Motor controller soft limit ---
+motor.setSoftLimit(CANSparkMax.SoftLimitDirection.kForward, (float)(MAX_HEIGHT / rotToMeters));
+motor.setSoftLimit(CANSparkMax.SoftLimitDirection.kReverse, 0.0f);
+motor.enableSoftLimit(CANSparkMax.SoftLimitDirection.kForward, true);
+motor.enableSoftLimit(CANSparkMax.SoftLimitDirection.kReverse, true);
+```
+
+## Profiled motion for smooth height changes
+
+A step change in setpoint causes the elevator to accelerate instantly — stressing the chain, sprocket, and gearbox, and causing the carriage to bounce on overshoot. Use `ProfiledPIDController`:
+
+```java
+ProfiledPIDController controller = new ProfiledPIDController(
+    8.0, 0, 0,
+    new TrapezoidProfile.Constraints(1.5, 3.0)  // max 1.5 m/s, 3 m/s^2
+);
+
+// New height command
+controller.setGoal(new TrapezoidProfile.State(targetMeters, 0.0));
+
+// In periodic
+double measurement = encoder.getPosition();
+double pidVolts = controller.calculate(measurement);
+TrapezoidProfile.State sp = controller.getSetpoint();
+
+// ElevatorFeedforward only needs velocity (not position)
+double ffVolts = ff.calculate(sp.velocity);
+
+motor.setVoltage(pidVolts + ffVolts);
+```
+
+## Common pitfalls
+
+### 1. Wrong motor direction
+
+The positive direction of your motor must match the positive direction of your encoder. If you set `motor.setInverted(true)` but not `encoder.setInverted(true)` (or vice versa), the feedback loop is negative — the more voltage you apply, the further from the setpoint you get. This causes runaway.
+
+**Test:** command the elevator manually at low power. Verify that positive voltage → positive encoder reading → upward physical motion. Fix inversions until all three agree.
+
+### 2. Forgetting gear ratio
+
+A 12:1 gearbox means the motor spins 12 times per one spool rotation. If you use `encoder.getPosition()` without dividing by the gear ratio, your "1 meter" setpoint is actually 12 meters of motor travel — the elevator would slam into the top of the frame.
+
+### 3. Using the profiler before zeroing
+
+If the elevator isn't zeroed yet and you call `controller.setGoal(0.0)`, the profiler tries to move the elevator to encoder position 0 — which may be wherever the encoder currently reads (e.g., 3.2 rotations from a previous session). Always complete the zeroing sequence before enabling position control.
+
+### 4. Two motors, one encoder
+
+If your elevator uses two motors mechanically coupled (common in FRC), designate one as the leader and the other as a follower. Only PID/feedforward from the leader. The follower mirrors the leader's output:
+
+```java
+CANSparkMax leader   = new CANSparkMax(1, MotorType.kBrushless);
+CANSparkMax follower = new CANSparkMax(2, MotorType.kBrushless);
+follower.follow(leader, /* invert = */ true);  // invert if motors face opposite directions
+```
+
+## Full elevator subsystem
+
+```java
+public class ElevatorSubsystem extends SubsystemBase {
+    private final CANSparkMax leader   = new CANSparkMax(1, MotorType.kBrushless);
+    private final CANSparkMax follower = new CANSparkMax(2, MotorType.kBrushless);
+    private final RelativeEncoder encoder = leader.getEncoder();
+    private final DigitalInput bottomLimit = new DigitalInput(1);
+
+    private static final double SPOOL_RADIUS = 0.0254;   // m
+    private static final double GEAR_RATIO   = 12.0;
+    private static final double ROT_TO_M = (2 * Math.PI * SPOOL_RADIUS) / GEAR_RATIO;
+    private static final double MAX_HEIGHT_M = 1.5;
+
+    private final ElevatorFeedforward ff = new ElevatorFeedforward(0.12, 0.48, 2.9, 0.06);
+    private final ProfiledPIDController controller = new ProfiledPIDController(
+        8.0, 0, 0,
+        new TrapezoidProfile.Constraints(1.5, 3.0)
+    );
+
+    private boolean zeroed = false;
+
+    public ElevatorSubsystem() {
+        follower.follow(leader, true);
+        encoder.setPositionConversionFactor(ROT_TO_M);
+        encoder.setVelocityConversionFactor(ROT_TO_M / 60.0);
+        controller.setTolerance(0.01);
+    }
+
+    public void zero() {
+        encoder.setPosition(0.0);
+        controller.reset(0.0);
+        zeroed = true;
+    }
+
+    public boolean isAtBottom() { return !bottomLimit.get(); }
+
+    public void setHeight(double meters) {
+        if (!zeroed) return;
+        double clamped = MathUtil.clamp(meters, 0.0, MAX_HEIGHT_M);
+        controller.setGoal(new TrapezoidProfile.State(clamped, 0.0));
+    }
+
+    public boolean atGoal() { return zeroed && controller.atGoal(); }
+
+    @Override
+    public void periodic() {
+        if (!zeroed) return;
+
+        double measurement = encoder.getPosition();
+        double pidVolts = controller.calculate(measurement);
+        TrapezoidProfile.State sp = controller.getSetpoint();
+        double ffVolts = ff.calculate(sp.velocity);
+        double total = pidVolts + ffVolts;
+
+        // Soft limits
+        if (measurement <= 0.0 && total < 0) total = 0;
+        if (measurement >= MAX_HEIGHT_M && total > 0) total = 0;
+
+        leader.setVoltage(total);
+    }
+}
+```
+
+## Key takeaways
+
+- `ElevatorFeedforward` uses kS (static friction), kG (constant gravity hold), kV (velocity/back-EMF), and kA (acceleration inertia).
+- kG is constant — it does not change with elevator height, unlike `ArmFeedforward` where kG scales with cos(angle).
+- Always apply both a position and velocity conversion factor so encoder values are in meters and m/s.
+- Zero the encoder on the limit switch every time the robot initializes before running position control.
+- Use soft limits in code AND on the motor controller for defense-in-depth against code bugs.
+- Dual-motor elevators use `.follow()` on the secondary motor — only one encoder and one control loop.
+
+## Common confusions
+
+**"My elevator oscillates at the top but not the bottom."** At the top the PID error is near zero, but kG is pushing the carriage against gravity — small encoder noise causes repeated small corrections. Reduce kP, increase kG accuracy, or add a small deadband: if `|error| < 0.01 m`, output only kG.
+
+**"The elevator creeps upward when I command it to hold."** kG is too high. Tune kG by disabling PID and finding the voltage that barely holds the elevator still at mid-travel. That is your kG.
+
+**"After zeroing, my encoder reads 0 but the carriage is 5 cm above the floor."** Your limit switch is mounted 5 cm above the true bottom. Either adjust the mount or add an offset: `encoder.setPosition(0.05)` when the switch triggers.
+
+## Challenge
+
+<Try>
+Compute the total feedforward voltage for an elevator with:
+kS = 0.10 V, kG = 0.50 V, kV = 3.0 V*s/m, kA = 0.08 V*s^2/m
+
+Evaluate at three motion states:
+1. Holding still at any height (velocity = 0, acceleration = 0)
+2. Moving up at 0.5 m/s constant velocity (acceleration = 0)
+3. Accelerating upward at 0.5 m/s with acceleration = 2.0 m/s^2
+
+Formula: voltage = kS * sign(velocity) + kG + kV * velocity + kA * acceleration
+(sign(0) = 0 by convention)
+</Try>
+
+<CodeEditor
+  client:load
+  starterCode={`public class Main {
+    public static void main(String[] args) {
+        double kS = 0.10;  // V
+        double kG = 0.50;  // V
+        double kV = 3.0;   // V*s/m
+        double kA = 0.08;  // V*s^2/m
+
+        // State 1: holding still
+        double vel1 = 0.0, accel1 = 0.0;
+        // State 2: constant velocity upward
+        double vel2 = 0.5, accel2 = 0.0;
+        // State 3: accelerating upward
+        double vel3 = 0.5, accel3 = 2.0;
+
+        double[][] states = {{vel1, accel1}, {vel2, accel2}, {vel3, accel3}};
+        String[] labels = {"hold", "cruise", "accel"};
+
+        for (int i = 0; i < states.length; i++) {
+            double v = states[i][0];
+            double a = states[i][1];
+            double sign = (v > 0) ? 1.0 : (v < 0) ? -1.0 : 0.0;
+            double ff = kS * sign + kG + kV * v + kA * a;
+            ff = Math.round(ff * 100.0) / 100.0;
+            System.out.println(labels[i] + " v=" + v + " a=" + a + " ff=" + ff + "V");
+        }
+    }
+}`}
+  testCases={[
+    { label: "ElevatorFF at hold, cruise 0.5 m/s, accel 0.5 m/s 2.0 m/s^2", expected: "hold v=0.0 a=0.0 ff=0.5V\ncruise v=0.5 a=0.0 ff=2.1V\naccel v=0.5 a=2.0 ff=2.26V" }
+  ]}
+  hint="For 'hold': sign(0) = 0, so only kG = 0.50. For 'cruise': kS*1 + kG + kV*0.5 + kA*0 = 0.10 + 0.50 + 1.50 = 2.10. For 'accel': 0.10 + 0.50 + 1.50 + 0.08*2.0 = 2.26."
+/>
+
+<Quiz
+  client:load
+  question="You apply the position conversion factor (ROT_TO_M) to your NEO encoder but forget to apply a velocity conversion factor. What does encoder.getVelocity() return?"
+  options={[
+    "Meters per second — the position factor automatically scales velocity",
+    "Rotations per second — the default unit for velocity",
+    "Meters per minute — position factor converts rotations to meters, but RPM is per minute not per second",
+    "The correct value, because WPILib divides by 60 automatically"
+  ]}
+  correct={2}
+  explanation="The CANSparkMax returns velocity in RPM (rotations per minute). The position conversion factor converts rotations to meters but does NOT divide by 60 to change 'per minute' to 'per second'. You must set a separate velocity conversion factor equal to ROT_TO_M / 60 to get meters per second."
+/>
+
+## What's next
+
+The next lesson shows how to measure feedforward constants experimentally using WPILib's SysId tool, so you don't have to guess kS, kV, and kA — you can derive them from real data collected on your robot.
