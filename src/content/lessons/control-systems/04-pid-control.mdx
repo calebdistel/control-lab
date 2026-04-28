@@ -1,0 +1,304 @@
+---
+track: control-systems
+lesson: 4
+title: "PID Control"
+prereqs: [control-systems-03]
+objectives:
+  - Explain the role of each term (P, I, D) in the PID equation
+  - Compute PID output given a history of errors, kP, kI, kD, and loop period
+  - Use WPILib's PIDController class to implement a closed-loop controller
+  - Describe integrator windup and explain how iZone prevents it
+  - Describe derivative kick and explain how measurement-based derivative avoids it
+---
+
+import Key from '../../../components/Key.astro';
+import Try from '../../../components/Try.astro';
+import Note from '../../../components/Note.astro';
+import Warn from '../../../components/Warn.astro';
+import CodeTrace from '../../../components/demos/CodeTrace.jsx';
+import Quiz from '../../../components/demos/Quiz.jsx';
+import CodeEditor from '../../../components/demos/CodeEditor.jsx';
+
+## Hook
+
+You've got a P controller on your arm. It gets close to the setpoint and then just hangs there, 3 degrees short. No matter how long you wait, it sits at that 3-degree offset. You could increase kP, but every time you do, the arm starts oscillating when it first moves.
+
+The I term is the fix for that persistent gap. And when you add I, the arm sometimes overshoots and rings — the D term is the fix for that.
+
+PID is three independent ideas stacked together. Each one solves a specific problem. Once you understand what problem each term is solving, tuning becomes a debugging exercise rather than a guessing game.
+
+## Core concept
+
+<Key>
+PID control combines three terms: Proportional (reacts to current error), Integral (accumulates past error to eliminate steady-state offset), and Derivative (reacts to rate of change to dampen overshoot). The full output is:
+
+output = kP * error + kI * integral_of_error + kD * derivative_of_error
+
+Each gain is tuned independently to address different response characteristics.
+</Key>
+
+### Reviewing P: current error
+
+From lesson 3: `P_term = kP * error`
+
+The proportional term reacts to where you are right now relative to where you want to be. It solves the gross positioning problem but can't fully eliminate steady-state error because at zero error it produces zero output.
+
+### Adding I: accumulated past error
+
+The integral term sums up all the error over time:
+
+`I_term = kI * sum(error * dt)`
+
+Where `dt` is the loop period (typically 0.02 seconds in WPILib's default scheduler).
+
+In practical terms, every loop cycle you add the current error (multiplied by dt) to a running total called the **integrator** or **integral accumulator**. The I term is that running total times kI.
+
+Why does this fix steady-state error? Suppose the arm is stuck at 3 degrees below setpoint. Each loop cycle, 3 * 0.02 = 0.06 gets added to the accumulator. After 50 loops (1 second), the accumulator holds 3.0. If kI = 0.01, the I term contributes 0.03 — a small but growing push. After enough time, the I term becomes large enough to overcome friction and drive the error to zero.
+
+Once the error reaches zero, new error stops accumulating, but the accumulated value remains. This is intentional — the steady-state I term represents the output needed just to hold position against friction/gravity.
+
+**Discrete implementation** (what's actually running in code):
+
+```java
+// Each loop cycle (dt = 0.02 s):
+accumulator += error * dt;
+double I_term = kI * accumulator;
+```
+
+### Adding D: rate of change
+
+The derivative term reacts to how fast the error is changing:
+
+`D_term = kD * (error - lastError) / dt`
+
+If error is shrinking rapidly (the mechanism is approaching setpoint fast), this term is negative — it applies a braking force to prevent overshoot. If error is growing rapidly (the mechanism is moving away from setpoint), the D term adds extra push.
+
+The D term is often described as "predicting the future" — if the current trajectory would cause an overshoot, D starts braking now.
+
+### The full PID equation
+
+`output = kP * error + kI * (sum of error * dt) + kD * ((error - lastError) / dt)`
+
+Or equivalently:
+
+`output = P_term + I_term + D_term`
+
+Each term is added together to produce the final motor command.
+
+### WPILib PIDController
+
+WPILib provides a battle-tested implementation:
+
+```java
+import edu.wpi.first.math.controller.PIDController;
+
+// Construct with gains: PIDController(kP, kI, kD)
+PIDController pidController = new PIDController(0.1, 0.001, 0.005);
+
+// In periodic():
+double measurement = encoder.getDistance();
+double output = pidController.calculate(measurement, setpoint);
+motor.set(output);
+```
+
+Key methods:
+- `calculate(measurement, setpoint)` — computes one step, advances the integrator
+- `setSetpoint(setpoint)` then `calculate(measurement)` — alternative form
+- `setTolerance(positionTolerance)` — set acceptable error band
+- `atSetpoint()` — returns true when within tolerance
+- `reset()` — clears the integrator accumulator (call this when re-enabling)
+- `setIZone(iZone)` — limits integrator activity (explained below)
+
+<Note>
+Call pidController.reset() whenever your subsystem switches from disabled to enabled, or when you change setpoints significantly. Stale integrator values from a previous run will cause unexpected initial behavior.
+</Note>
+
+### Integrator windup
+
+The I term accumulates as long as there is error. Consider what happens if the mechanism is stuck against a hard stop for 5 seconds while the setpoint is far away. During those 5 seconds, the integrator is accumulating error the entire time, building up an enormous value. When the mechanism is finally released, the I term will command excessive output, causing a large overshoot. This is **integrator windup**.
+
+**Prevention: iZone**
+
+The most practical FRC fix is `iZone` — the integrator only accumulates when the error is within a specified range:
+
+```java
+pidController.setIZone(50.0); // only integrate when error < 50 (e.g., 50 RPM)
+```
+
+When error is larger than iZone, the integrator is frozen (and often reset to zero). This prevents the accumulator from building up during large transients, while still allowing the I term to eliminate steady-state error once the mechanism is close to the setpoint.
+
+**Other prevention strategies:**
+- **Output clamping with integrator back-calculation** — if output is saturated (clamped), stop accumulating
+- **Manual reset on large setpoint change** — call `reset()` when the setpoint jumps significantly
+
+<Warn>
+Integrator windup is one of the most common causes of unexpected robot behavior. If your mechanism overshoots wildly after being held away from its setpoint, windup is likely the cause. Always set iZone when using the I term.
+</Warn>
+
+### Derivative kick
+
+Consider what happens when you change the setpoint suddenly. The error jumps from near-zero to a large value in one loop cycle. The derivative term computes:
+
+`D_term = kD * (newBigError - nearZeroError) / dt`
+
+This is a massive spike — the "derivative kick." It can saturate the output and cause the mechanism to lurch violently.
+
+**Solution: derivative on measurement**
+
+Instead of differentiating the error, differentiate the measurement directly:
+
+`D_term = -kD * (measurement - lastMeasurement) / dt`
+
+The negative sign is because if measurement is increasing toward setpoint, (measurement - lastMeasurement) is positive, and we want a dampening (negative) contribution.
+
+This avoids kick because the measurement changes smoothly — it doesn't jump when you change the setpoint. WPILib's PIDController uses derivative-on-measurement by default since WPILib 2023.
+
+**Measurement noise and D**
+
+Because D amplifies high-frequency changes, sensor noise gets amplified too. A noisy encoder will cause the D term to oscillate rapidly. Solutions:
+- Use a lower-resolution but smoother sensor for D (e.g., integrated motor encoder rather than external encoder)
+- Apply a low-pass filter to the measurement before passing it to the PID controller
+- Keep kD small enough that noise doesn't cause visible vibration
+
+### Putting it all together: a complete velocity controller
+
+```java
+public class ShooterSubsystem extends SubsystemBase {
+    private final CANSparkMax motor = new CANSparkMax(1, MotorType.kBrushless);
+    private final RelativeEncoder encoder = motor.getEncoder();
+
+    // kP, kI, kD — tuned empirically
+    private final PIDController pid = new PIDController(0.0003, 0.000005, 0.0001);
+
+    public ShooterSubsystem() {
+        // Only integrate when within 200 RPM of setpoint
+        pid.setIZone(200.0);
+        // Consider "at setpoint" when within 50 RPM
+        pid.setTolerance(50.0);
+    }
+
+    public void setTargetRPM(double rpm) {
+        pid.setSetpoint(rpm);
+        pid.reset(); // clear integrator on setpoint change
+    }
+
+    public boolean isAtTarget() {
+        return pid.atSetpoint();
+    }
+
+    @Override
+    public void periodic() {
+        double currentRPM = encoder.getVelocity(); // REV returns RPM natively
+        double output = pid.calculate(currentRPM);
+        motor.set(output);
+    }
+}
+```
+
+## Key takeaways
+
+- **P** reacts to current error. Solves gross positioning, leaves steady-state error.
+- **I** accumulates error over time. Eliminates steady-state error, but can cause windup and overshoot.
+- **D** reacts to rate of error change. Dampens overshoot, but amplifies sensor noise.
+- The full PID equation: `output = kP*error + kI*integral(error*dt) + kD*d(error)/dt`
+- WPILib's `PIDController` handles the math. You supply kP, kI, kD, and call `calculate()` every loop.
+- **Integrator windup** occurs when error accumulates during a large transient. Prevent it with `setIZone()`.
+- **Derivative kick** occurs when a setpoint step change causes a spike in D. Derivative-on-measurement (WPILib default) prevents it.
+
+## Common confusions
+
+**"I added kI but the mechanism still has steady-state error."**
+
+Check that kI is not zero and that iZone is wide enough. If the steady-state error is 5 RPM and your iZone is 3 RPM, the integrator never activates. Also verify that `reset()` is not being called repeatedly (which would clear the accumulator before it builds up).
+
+**"My mechanism overshoots more after adding kI."**
+
+The I term is now over-contributing. Either reduce kI, tighten iZone so the integrator only activates very close to the setpoint, or add/increase kD to dampen the overshoot.
+
+**"kD seems to do nothing."**
+
+If your sensor has high noise, the derivative term may already be saturated with noise and providing no useful information. Try logging the D_term contribution separately. If it's randomly oscillating around zero at high frequency, the sensor is too noisy for derivative action — consider filtering or setting kD to zero and relying on kP+kI only.
+
+**"The WPILib PIDController calculate() method takes measurement first, then setpoint. Is that right?"**
+
+Yes. `pidController.calculate(measurement, setpoint)` — measurement is the first argument. The error is computed internally as `setpoint - measurement`. This is a common source of sign errors if you transpose them.
+
+## Challenge
+
+<Try>
+Manually compute three consecutive PID output values given a history of measurements.
+
+Setup:
+- kP = 0.05, kI = 0.002, kD = 0.01
+- Loop period dt = 0.02 seconds
+- Setpoint = 100 units
+- Measurements: loop 1 = 80, loop 2 = 88, loop 3 = 94
+
+Compute P, I, D, and total output for each loop. Track the integral accumulator across loops.
+</Try>
+
+<CodeEditor
+  client:load
+  starterCode={`public class PIDTrace {
+    public static void main(String[] args) {
+        double kP = 0.05;
+        double kI = 0.002;
+        double kD = 0.01;
+        double dt = 0.02;
+        double setpoint = 100.0;
+
+        double[] measurements = {80.0, 88.0, 94.0};
+
+        double integrator = 0.0;
+        double lastError = 0.0; // no previous error on first loop
+        boolean firstLoop = true;
+
+        for (int i = 0; i < measurements.length; i++) {
+            double measurement = measurements[i];
+            double error = setpoint - measurement;
+
+            // Proportional term
+            double pTerm = kP * error;
+
+            // Integral term: accumulate error * dt
+            integrator += error * dt;
+            double iTerm = kI * integrator;
+
+            // Derivative term: (error - lastError) / dt
+            // On first loop, no prior error — D term is 0
+            double dTerm = firstLoop ? 0.0 : kD * (error - lastError) / dt;
+
+            double output = pTerm + iTerm + dTerm;
+
+            System.out.printf("Loop %d: error=%.1f P=%.4f I=%.4f D=%.4f output=%.4f%n",
+                i + 1, error, pTerm, iTerm, dTerm, output);
+
+            lastError = error;
+            firstLoop = false;
+        }
+    }
+}`}
+  testCases={[
+    { label: "Loop 1 error is 20.0", expected: "Loop 1: error=20.0" },
+    { label: "Loop 2 error is 12.0", expected: "Loop 2: error=12.0" },
+    { label: "Loop 3 error is 6.0", expected: "Loop 3: error=6.0" }
+  ]}
+  hint="For loop 1: integrator = 20*0.02 = 0.4, P=0.05*20=1.0, I=0.002*0.4=0.0008, D=0 (first loop). For loop 2: integrator grows by 12*0.02=0.24, D=(12-20)/0.02 = -400 * 0.01 = -4.0. Run the code to verify all outputs."
+/>
+
+<Quiz
+  client:load
+  question="A PID controller has been running for 10 seconds with the mechanism stuck 50 units below the setpoint (e.g., blocked by an obstacle). The obstacle is removed. What problem is most likely to occur immediately?"
+  options={[
+    "The mechanism won't move because the P term is too small",
+    "The mechanism will overshoot significantly due to integrator windup",
+    "The D term will cause a derivative kick",
+    "The controller will reset itself automatically"
+  ]}
+  correct={1}
+  explanation="After 10 seconds with error=50, the integrator has accumulated 50 * 10 = 500 (ignoring dt scaling). When the obstacle is removed, the large I term will command excessive output causing significant overshoot — this is integrator windup. Use setIZone() to prevent the integrator from building up during large, sustained errors."
+/>
+
+## What's next
+
+You now understand what PID does mathematically. The next lesson is about how to actually arrive at good kP, kI, and kD values on a real robot. Tuning is part method and part diagnosis — you'll learn a systematic procedure that works on competition day, and how to read the symptoms of a badly tuned controller to know exactly what to adjust.

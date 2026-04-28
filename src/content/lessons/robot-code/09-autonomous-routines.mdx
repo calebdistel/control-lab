@@ -1,0 +1,382 @@
+---
+track: robot-code
+lesson: 9
+title: Autonomous Routines
+prereqs: [robot-code-06]
+objectives:
+  - Describe what happens during the 15-second autonomous period and how WPILib enters it
+  - Build a multi-step autonomous routine using SequentialCommandGroup
+  - Wire a SendableChooser to SmartDashboard so drivers can select an auto before the match
+  - Compare time-based and sensor-based autonomous strategies and state the tradeoffs
+---
+
+import Key from '../../../components/Key.astro';
+import Try from '../../../components/Try.astro';
+import Note from '../../../components/Note.astro';
+import Warn from '../../../components/Warn.astro';
+import CodeTrace from '../../../components/demos/CodeTrace.jsx';
+import Quiz from '../../../components/demos/Quiz.jsx';
+import CodeEditor from '../../../components/demos/CodeEditor.jsx';
+
+## Hook
+
+Fifteen seconds. No driver input. The robot has to score on its own.
+
+Most teams write their first autonomous routine as a single command with a giant `execute()` method full of `Thread.sleep()` calls. It works in the shop, then fails at the event because the battery was at 91% instead of 100% and the timing was off by 0.3 seconds.
+
+Reliable autonomous routines are composed from small, reusable commands. They finish based on sensors, not clocks — and when a sensor fails, they fall back gracefully. This lesson covers the structure.
+
+## Core concept
+
+<Key>
+Autonomous routines are sequences of Commands. SequentialCommandGroup runs them one at a time, each finishing before the next starts. Wire multiple routines to a SendableChooser so drivers can pick one on SmartDashboard. Prefer sensor-based completion over time-based whenever possible.
+</Key>
+
+## The autonomous period
+
+When the FMS (Field Management System) signals autonomous mode, WPILib calls:
+
+1. `Robot.autonomousInit()` — runs once
+2. `Robot.autonomousPeriodic()` — runs every 20 ms
+3. `Robot.autonomousExit()` — runs once when auto ends
+
+In a command-based project, `autonomousInit()` schedules the selected autonomous command. `CommandScheduler.getInstance().run()` in `robotPeriodic()` keeps executing it:
+
+```java
+// Robot.java
+private Command autoCommand;
+
+@Override
+public void autonomousInit() {
+    autoCommand = container.getAutonomousCommand();
+    if (autoCommand != null) {
+        autoCommand.schedule();
+    }
+}
+
+@Override
+public void autonomousExit() {
+    if (autoCommand != null) {
+        autoCommand.cancel();
+    }
+}
+```
+
+<Note>
+Cancel the auto command in `autonomousExit()`. Otherwise, if the auto command is still running (e.g., a drive command), it keeps running into teleop, fighting the driver.
+</Note>
+
+## SequentialCommandGroup
+
+`edu.wpi.first.wpilibj2.command.SequentialCommandGroup` runs a list of commands one after another. Each command runs until its `isFinished()` returns true, then the next begins.
+
+```java
+import edu.wpi.first.wpilibj2.command.SequentialCommandGroup;
+
+public class DriveAndShootAuto extends SequentialCommandGroup {
+    public DriveAndShootAuto(DriveSubsystem drive, ShooterSubsystem shooter) {
+        addCommands(
+            new DriveDistanceCommand(drive, 2.0),   // drive 2 meters
+            new SpinUpShooterCommand(shooter),       // spin up to speed
+            new FireCommand(shooter, 1.5)            // fire for 1.5 seconds
+        );
+    }
+}
+```
+
+The scheduler runs `DriveDistanceCommand` until it reports finished, then immediately starts `SpinUpShooterCommand`, then `FireCommand`. No manual timing required.
+
+## Other command group types
+
+| Class | Behavior |
+|---|---|
+| `SequentialCommandGroup` | One at a time, in order |
+| `ParallelCommandGroup` | All at once; finishes when ALL finish |
+| `ParallelRaceGroup` | All at once; finishes when ANY ONE finishes, cancels others |
+| `ParallelDeadlineGroup` | All at once; finishes when the FIRST (deadline) command finishes |
+
+These compose freely:
+
+```java
+addCommands(
+    // Drive while spinning up the shooter simultaneously
+    new ParallelDeadlineGroup(
+        new DriveDistanceCommand(drive, 3.0),    // deadline
+        new SpinUpShooterCommand(shooter)         // runs alongside
+    ),
+    // Then fire once in position
+    new FireCommand(shooter, 1.5)
+);
+```
+
+## SendableChooser
+
+`edu.wpi.first.wpilibj.smartdashboard.SendableChooser` lets drivers choose an autonomous routine from SmartDashboard or Shuffleboard before the match:
+
+```java
+// In RobotContainer
+private final SendableChooser<Command> autoChooser = new SendableChooser<>();
+
+public RobotContainer() {
+    configureAutoChooser();
+    configureBindings();
+}
+
+private void configureAutoChooser() {
+    autoChooser.setDefaultOption("Do Nothing",
+        Commands.none());
+    autoChooser.addOption("Drive Forward 2m",
+        new DriveDistanceCommand(drive, 2.0));
+    autoChooser.addOption("Drive and Shoot",
+        new DriveAndShootAuto(drive, shooter));
+    autoChooser.addOption("Two-Piece Auto",
+        new TwoPieceAuto(drive, intake, shooter));
+
+    SmartDashboard.putData("Auto Chooser", autoChooser);
+}
+
+public Command getAutonomousCommand() {
+    return autoChooser.getSelected();
+}
+```
+
+<Warn>
+Call `autoChooser.getSelected()` in `autonomousInit()`, not at construction time. The driver makes their selection during the pre-match period; reading it too early returns the default option regardless of what the driver chose.
+</Warn>
+
+## Time-based vs sensor-based completion
+
+### Time-based
+
+```java
+public class DriveForTimeCommand extends CommandBase {
+    private final DriveSubsystem drive;
+    private final double seconds;
+    private final Timer timer = new Timer();
+
+    public DriveForTimeCommand(DriveSubsystem drive, double seconds) {
+        this.drive   = drive;
+        this.seconds = seconds;
+        addRequirements(drive);
+    }
+
+    @Override public void initialize() { timer.restart(); }
+
+    @Override public void execute()    { drive.setSpeed(0.5, 0.5); }
+
+    @Override public boolean isFinished() { return timer.hasElapsed(seconds); }
+
+    @Override public void end(boolean interrupted) { drive.stop(); }
+}
+```
+
+**Pros:** Simple. Always terminates.
+**Cons:** Distance depends on battery voltage, carpet friction, mechanism load. Consistent only in controlled conditions.
+
+### Sensor-based
+
+```java
+public class DriveDistanceCommand extends CommandBase {
+    private final DriveSubsystem drive;
+    private final double targetMeters;
+
+    public DriveDistanceCommand(DriveSubsystem drive, double meters) {
+        this.drive        = drive;
+        this.targetMeters = meters;
+        addRequirements(drive);
+    }
+
+    @Override public void initialize() { drive.resetEncoders(); }
+
+    @Override public void execute()    { drive.setSpeed(0.5, 0.5); }
+
+    @Override public boolean isFinished() {
+        return drive.getAverageDistanceMeters() >= targetMeters;
+    }
+
+    @Override public void end(boolean interrupted) { drive.stop(); }
+}
+```
+
+**Pros:** Repeatable. Doesn't drift with battery voltage.
+**Cons:** Encoder failure or wheel slip can cause it to run indefinitely. Always add a timeout fallback.
+
+### Best practice: sensor-based with timeout
+
+WPILib provides `Command.withTimeout(seconds)` as a decorator:
+
+```java
+// Will finish when encoders reach 2m OR after 4 seconds — whichever comes first
+new DriveDistanceCommand(drive, 2.0).withTimeout(4.0)
+```
+
+This is a `ParallelRaceGroup` under the hood — the timeout wins if the sensor command takes too long.
+
+## A complete auto example
+
+```java
+public class DriveAndShootAuto extends SequentialCommandGroup {
+    public DriveAndShootAuto(DriveSubsystem drive,
+                              ShooterSubsystem shooter,
+                              IntakeSubsystem intake) {
+        addCommands(
+            // 1. Drive out of the starting zone (sensor-based, 4s timeout)
+            new DriveDistanceCommand(drive, 3.0).withTimeout(4.0),
+
+            // 2. Spin up shooter while retracting intake simultaneously
+            new ParallelDeadlineGroup(
+                new WaitUntilCommand(shooter::isAtTargetRpm),   // deadline
+                new SpinUpShooterCommand(shooter),
+                new RetractIntakeCommand(intake)
+            ).withTimeout(3.0),
+
+            // 3. Fire for 1.5 seconds
+            new FireCommand(shooter).withTimeout(1.5),
+
+            // 4. Stop shooter
+            Commands.runOnce(shooter::stop, shooter)
+        );
+    }
+}
+```
+
+## PathPlanner intro
+
+For teams that need precise trajectories (curves, specific positions), **PathPlanner** is the de-facto standard in FRC.
+
+PathPlanner (by team 3015 / mjansen4857) provides:
+- A GUI to draw paths on the field diagram
+- Auto-generation of `PathPlannerAuto` commands that follow the path using a holonomic or differential drive controller
+- Integration with WPILib's `SendableChooser` via `AutoBuilder`
+
+```java
+// With PathPlanner installed, register named commands then build chooser:
+NamedCommands.registerCommand("shoot", new FireCommand(shooter));
+NamedCommands.registerCommand("intake", new IntakeCommand(intake));
+
+// AutoBuilder reads paths from deploy/pathplanner/autos/
+autoChooser = AutoBuilder.buildAutoChooser();
+SmartDashboard.putData("Auto Chooser", autoChooser);
+```
+
+PathPlanner is a separate library — add it to `build.gradle`. Full documentation at [pathplanner.me](https://pathplanner.me).
+
+## Interactive demo
+
+<CodeTrace
+  client:load
+  variables={{ step: "init", running: "none", finished: "—" }}
+  steps={[
+    { code: "autonomousInit()",                    state: { step: "init",    running: "none",                  finished: "—"          }, comment: "auto period starts" },
+    { code: "autoCommand.schedule()",             state: { step: "sched",   running: "SequentialGroup",       finished: "—"          }, comment: "group queued" },
+    { code: "DriveDistanceCommand.initialize()",   state: { step: "drive",   running: "DriveDistanceCommand",  finished: "—"          }, comment: "encoders reset" },
+    { code: "DriveDistanceCommand.execute() ×N",  state: { step: "driving", running: "DriveDistanceCommand",  finished: "—"          }, comment: "20ms loop" },
+    { code: "isFinished() → true",                state: { step: "done1",   running: "DriveDistanceCommand",  finished: "Drive ✓"    }, comment: "2m reached" },
+    { code: "DriveDistanceCommand.end(false)",     state: { step: "end1",    running: "none",                  finished: "Drive ✓"    }, comment: "motors stopped" },
+    { code: "SpinUpShooterCommand.initialize()",  state: { step: "spinup",  running: "SpinUpShooterCommand",  finished: "Drive ✓"    }, comment: "next command starts" },
+    { code: "SpinUpShooterCommand.execute() ×N",  state: { step: "spinning",running: "SpinUpShooterCommand",  finished: "Drive ✓"    }, comment: "waiting for RPM" },
+    { code: "isFinished() → true (at speed)",     state: { step: "done2",   running: "SpinUpShooterCommand",  finished: "Drive ✓ Spinup ✓" }, comment: "" },
+    { code: "FireCommand.initialize()",           state: { step: "fire",    running: "FireCommand",            finished: "Drive ✓ Spinup ✓" }, comment: "feeding" },
+    { code: "FireCommand.end() → group done",     state: { step: "done3",   running: "none",                  finished: "All ✓"      }, comment: "auto complete" },
+  ]}
+/>
+
+<Quiz
+  client:load
+  question="When should you call autoChooser.getSelected() to retrieve the driver's auto selection?"
+  options={[
+    "In the RobotContainer constructor, when the chooser is created",
+    "In autonomousInit(), just before scheduling the command",
+    "In robotPeriodic(), so the selection is always fresh",
+    "In teleopInit(), as a fallback"
+  ]}
+  correct={1}
+  explanation="The driver makes their selection during the pre-match period. autonomousInit() is called when autonomous begins — this is the correct moment to read the chooser. Reading it at construction time returns the default option regardless of the driver's choice."
+/>
+
+<Quiz
+  client:load
+  question="What does command.withTimeout(3.0) produce?"
+  options={[
+    "A WaitCommand that pauses for 3 seconds before running the wrapped command",
+    "A ParallelRaceGroup that cancels the command if it hasn't finished in 3 seconds",
+    "A decorator that slows the command's execute() calls to once per 3 seconds",
+    "An exception if the command takes longer than 3 seconds to finish"
+  ]}
+  correct={1}
+  explanation="withTimeout is a decorator that wraps the command in a ParallelRaceGroup with a WaitCommand(3.0). The race group finishes when either command finishes first — so the original command is cancelled if it exceeds 3 seconds."
+/>
+
+## Key takeaways
+
+- `autonomousInit()` schedules the auto command; `autonomousExit()` cancels it so it doesn't bleed into teleop.
+- `SequentialCommandGroup` runs commands one at a time, each finishing before the next starts.
+- `ParallelDeadlineGroup`, `ParallelRaceGroup`, and `ParallelCommandGroup` handle concurrent steps.
+- `SendableChooser` wired to `SmartDashboard` lets drivers pick an auto at the field.
+- Sensor-based completion (`DriveDistanceCommand`) is more repeatable than time-based; always add `.withTimeout()` as a safety net.
+- PathPlanner handles complex trajectories — use it once you're comfortable with basic sequential autos.
+
+## Common confusions
+
+**"My auto command keeps running into teleop."** You forgot to call `autoCommand.cancel()` in `autonomousExit()`. Add it there.
+
+**"The chooser always shows the default option even after I select something."** You're calling `autoChooser.getSelected()` too early — probably at construction. Move that call to `autonomousInit()`.
+
+**"My SequentialCommandGroup skips a step."** Check that the skipped command's `isFinished()` doesn't return `true` immediately. Common cause: `initialize()` resets something that makes `isFinished()` true before `execute()` runs.
+
+**"The robot overshoots the distance target."** Open-loop speed commands with encoder-based completion still have motor latency. Consider using a PID drive command, or add a brief `WaitCommand(0.1)` after stopping to let the robot settle.
+
+## Challenge
+
+<Try>
+Trace through this SequentialCommandGroup in your head, then confirm by reading the code trace. Each command's finish condition is shown as a comment. Determine the order in which lines print.
+</Try>
+
+<CodeEditor
+  client:load
+  starterCode={`// Simulate a SequentialCommandGroup without real hardware.
+// Each "command" is represented by a lambda that prints a line.
+// Run them in the correct order: initialize → execute × N → end.
+
+public class AutoTrace {
+
+    // Simulate a command: runs execute() 'ticks' times, then ends
+    static void runCommand(String name, int ticks) {
+        System.out.println(name + ": initialize");
+        for (int i = 0; i < ticks; i++) {
+            System.out.println(name + ": execute " + (i + 1));
+        }
+        System.out.println(name + ": end");
+    }
+
+    public static void main(String[] args) {
+        // Sequential group: DriveForward(2 ticks) → SpinUp(3 ticks) → Fire(1 tick)
+        // TODO: call runCommand three times in the correct sequential order
+        // Expected output:
+        //   DriveForward: initialize
+        //   DriveForward: execute 1
+        //   DriveForward: execute 2
+        //   DriveForward: end
+        //   SpinUp: initialize
+        //   SpinUp: execute 1
+        //   SpinUp: execute 2
+        //   SpinUp: execute 3
+        //   SpinUp: end
+        //   Fire: initialize
+        //   Fire: execute 1
+        //   Fire: end
+    }
+}`}
+  testCases={[
+    { label: "DriveForward initialize", expected: "DriveForward: initialize" },
+    { label: "DriveForward execute 2",  expected: "DriveForward: execute 2"  },
+    { label: "DriveForward end",        expected: "DriveForward: end"        },
+    { label: "SpinUp execute 3",        expected: "SpinUp: execute 3"        },
+    { label: "Fire end",                expected: "Fire: end"                }
+  ]}
+  hint="Call runCommand('DriveForward', 2), then runCommand('SpinUp', 3), then runCommand('Fire', 1). Sequential means one finishes before the next begins."
+/>
+
+## What's next
+
+In **Lesson 10: Telemetry and Logging**, we instrument the robot — putting data on SmartDashboard, organizing dashboards with Shuffleboard, recording data for post-match review with DataLog, and understanding what's worth logging versus what creates noise.

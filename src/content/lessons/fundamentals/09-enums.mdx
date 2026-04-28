@@ -1,0 +1,327 @@
+---
+track: fundamentals
+lesson: 9
+title: Enums
+prereqs: [fundamentals-08]
+objectives:
+  - Define an enum type with named constants
+  - Use an enum value in a switch statement to select behavior
+  - Compare enum values correctly and explain why == works for enums
+  - Recognize when an int or String constant should be replaced with an enum
+---
+
+import Key from '../../../components/Key.astro';
+import Try from '../../../components/Try.astro';
+import Note from '../../../components/Note.astro';
+import Warn from '../../../components/Warn.astro';
+import CodeTrace from '../../../components/demos/CodeTrace.jsx';
+import Quiz from '../../../components/demos/Quiz.jsx';
+import CodeEditor from '../../../components/demos/CodeEditor.jsx';
+
+## Hook
+
+You're writing code to handle the alliance color. The FRC API tells you whether you're on the red or blue alliance, and your auto routine needs to mirror its path based on the answer. You write:
+
+```java
+int alliance = getAlliance();  // returns 0 for red, 1 for blue?
+                               // or was it 1 for red, 0 for blue?
+
+if (alliance == 0) {
+    // red path
+} else if (alliance == 1) {
+    // blue path
+}
+```
+
+Then a teammate adds scoring code and uses `2` for red and `3` for blue because that's what they saw in a different function. Now you have four values in the codebase meaning "alliance color" with no single source of truth.
+
+When your auto mirror logic checks `alliance == 0` but the scoring code passes `2`, the robot mirrors correctly for one half of the field during practice — and wrong at the competition where the alliance station is different.
+
+Magic numbers make code fragile and unreadable. Enums fix this.
+
+## Core concept
+
+<Key>
+An enum (enumeration) defines a type whose only valid values are the named constants you list. It makes invalid states unrepresentable at compile time and makes code read like plain English.
+</Key>
+
+## Defining an enum
+
+```java
+public enum Alliance {
+    RED,
+    BLUE
+}
+```
+
+That's it. `Alliance` is now a type. The only valid values are `Alliance.RED` and `Alliance.BLUE`. There is no `Alliance.GREEN`, no `Alliance.2`, no typo that compiles silently.
+
+More FRC examples:
+
+```java
+public enum RobotMode {
+    DISABLED,
+    TELEOP,
+    AUTO,
+    TEST
+}
+
+public enum ArmPosition {
+    STOWED,
+    LOW_SCORE,
+    MID_SCORE,
+    HIGH_SCORE
+}
+```
+
+## Using enums in variables and parameters
+
+An enum value is used just like any other type:
+
+```java
+Alliance alliance = Alliance.RED;
+RobotMode mode = RobotMode.TELEOP;
+
+// Pass as an argument
+void configureAuto(Alliance ourAlliance) {
+    // ...
+}
+configureAuto(Alliance.BLUE);
+```
+
+Notice: `configureAuto(2)` would now be a **compile error**. The compiler enforces that only valid `Alliance` values can be passed. You've eliminated an entire class of bugs at compile time.
+
+## Comparing enum values
+
+Use `==` to compare enum values — it works correctly and reads naturally:
+
+```java
+Alliance alliance = Alliance.RED;
+
+if (alliance == Alliance.RED) {
+    System.out.println("Drive to red scoring zone");
+}
+```
+
+<Note>
+Enum constants are singletons — there is exactly one `Alliance.RED` object in the JVM. So `==` (identity comparison) is both correct and idiomatic for enums. Don't use `.equals()` — it works too, but `==` is the convention.
+</Note>
+
+## Enums in switch statements
+
+The switch statement shines with enums. Every case corresponds to one named constant — no guessing what `0` or `1` means:
+
+```java
+RobotMode mode = RobotMode.AUTO;
+
+switch (mode) {
+    case DISABLED:
+        System.out.println("Robot is disabled — motors locked");
+        break;
+    case TELEOP:
+        System.out.println("Driver control active");
+        break;
+    case AUTO:
+        System.out.println("Running autonomous routine");
+        break;
+    case TEST:
+        System.out.println("Test mode — individual subsystem checks");
+        break;
+}
+```
+
+Inside a `switch` on an enum, you write the constant name alone (no `RobotMode.` prefix needed). The compiler knows the type from the switch expression.
+
+<Warn>
+Don't forget `break` at the end of each case. Without it, execution falls through to the next case — which is almost never what you want. A missing `break` is a classic bug source.
+</Warn>
+
+## FRC context: alliance-based auto path selection
+
+Here's a complete example of enum-driven auto path selection. Without an enum this would be an error-prone string or integer comparison:
+
+```java
+public enum Alliance { RED, BLUE }
+
+double getStartingX(Alliance alliance) {
+    switch (alliance) {
+        case RED:  return 1.5;   // meters from red alliance wall
+        case BLUE: return 15.0;  // mirrored for blue
+        default:   return 8.0;   // center of field fallback
+    }
+}
+
+boolean shouldMirrorPath(Alliance alliance) {
+    return alliance == Alliance.BLUE;
+}
+```
+
+The `default` case in a switch handles any enum value not explicitly listed. It's good practice to include one even when you've covered all cases — it future-proofs the code if a new constant is added later.
+
+## FRC context: robot mode state machine
+
+In the previous lesson, we used a class to represent a robot mode. With an enum, the mode itself becomes the state:
+
+```java
+public enum RobotMode { DISABLED, TELEOP, AUTO, TEST }
+
+class RobotController {
+    private RobotMode currentMode = RobotMode.DISABLED;
+
+    void setMode(RobotMode newMode) {
+        currentMode = newMode;
+    }
+
+    void periodic() {
+        switch (currentMode) {
+            case DISABLED:
+                // zero all outputs
+                break;
+            case TELEOP:
+                // read joysticks, drive
+                break;
+            case AUTO:
+                // execute autonomous steps
+                break;
+            case TEST:
+                // individual mechanism checks
+                break;
+        }
+    }
+}
+```
+
+<Note>
+WPILib's `TimedRobot` already handles mode switching for you — it calls `teleopPeriodic()`, `autonomousPeriodic()`, etc. automatically. This example shows the underlying concept that makes those callbacks work.
+</Note>
+
+## Enums can have fields and methods
+
+Enums aren't just labels — they can carry data. Each constant can store associated values:
+
+```java
+public enum ArmPosition {
+    STOWED   (5.0),
+    LOW_SCORE(30.0),
+    MID_SCORE(75.0),
+    HIGH_SCORE(110.0);
+
+    private final double degrees;
+
+    ArmPosition(double degrees) {
+        this.degrees = degrees;
+    }
+
+    public double getDegrees() {
+        return degrees;
+    }
+}
+```
+
+Using it:
+
+```java
+ArmPosition target = ArmPosition.HIGH_SCORE;
+arm.setTargetDegrees(target.getDegrees());  // 110.0
+```
+
+Now the position name and its degree value live together. If you change the high-score angle, you change it in exactly one place.
+
+## Tracing enum-based switching
+
+<CodeTrace
+  client:load
+  variables={{ mode: "AUTO", output: "?" }}
+  steps={[
+    { code: "mode = RobotMode.AUTO",             state: { mode: "AUTO",  output: "?" },                      comment: "assigned" },
+    { code: "switch (mode)",                     state: { mode: "AUTO",  output: "?" },                      comment: "evaluate switch" },
+    { code: "case DISABLED: no match",           state: { mode: "AUTO",  output: "?" },                      comment: "skip" },
+    { code: "case TELEOP: no match",             state: { mode: "AUTO",  output: "?" },                      comment: "skip" },
+    { code: "case AUTO: match!",                 state: { mode: "AUTO",  output: "?" },                      comment: "enter case" },
+    { code: "print 'Running autonomous routine'",state: { mode: "AUTO",  output: "Running autonomous..." },  comment: "executed" },
+    { code: "break — exit switch",               state: { mode: "AUTO",  output: "Running autonomous..." },  comment: "done" },
+  ]}
+/>
+
+## Knowledge check
+
+<Quiz
+  client:load
+  question="Why should you use an enum instead of integer constants like static int RED = 0; static int BLUE = 1;?"
+  options={[
+    "Enums are faster at runtime than integers",
+    "The compiler rejects invalid values with enums; with integers, any int (including bogus ones) compiles fine",
+    "Enums can be used in switch statements but integers cannot",
+    "Integers cannot be stored in variables"
+  ]}
+  correct={1}
+  explanation="With integer constants, nothing stops a programmer from passing 7 where RED or BLUE is expected — it compiles and silently produces wrong behavior. With enums, passing an invalid value is a compile error. Integers can also be used in switch; that's not the distinguishing factor."
+/>
+
+<Quiz
+  client:load
+  question="What is the correct way to compare enum values in Java?"
+  options={[
+    "mode.equals(RobotMode.TELEOP)",
+    "mode == RobotMode.TELEOP",
+    "mode.compareTo(RobotMode.TELEOP) == 0",
+    "All three work, but == is the conventional choice for enums"
+  ]}
+  correct={3}
+  explanation="All three comparisons work correctly for enums. However, == is the idiomatic choice because enum constants are singletons — identity comparison is both correct and cleaner to read. Most FRC code uses ==."
+/>
+
+## Key takeaways
+
+- An enum defines a closed set of named constants; the compiler prevents any other value from being used.
+- Use enum values in `switch` statements — each case names a specific constant, making the intent clear.
+- Compare enum values with `==`; it is both correct and conventional.
+- Enums can carry fields and methods, making them a powerful alternative to lookup tables when constants have associated data.
+
+## Common confusions
+
+**"I forgot `break` and now two cases run."** Fall-through is intentional in some C-style languages but almost always a mistake in Java. Add `break` at the end of every case, or use the modern `switch` expression syntax (`case X -> expression`) which can't fall through.
+
+**"I want to loop over all enum values."** Every enum has a static `.values()` method that returns an array of all constants: `for (Alliance a : Alliance.values()) { ... }`. This is useful for validation or initialization loops.
+
+**"I defined the enum inside a method — now I can't use it in other methods."** Define enums at the class level (alongside fields) or in their own file, not inside a method body.
+
+## Challenge
+
+<Try>
+Define an `Alliance` enum with `RED` and `BLUE` values. Write a `scoringMultiplier` method: RED alliance gets a multiplier of 1.0, BLUE alliance gets 1.5 (home field advantage). Print the multiplier for each alliance.
+</Try>
+
+<CodeEditor
+  client:load
+  starterCode={`public class Main {
+
+    enum Alliance {
+        RED,
+        BLUE
+    }
+
+    static double scoringMultiplier(Alliance alliance) {
+        // Return 1.0 for RED, 1.5 for BLUE
+        return 0.0; // fix this
+    }
+
+    public static void main(String[] args) {
+        System.out.println(scoringMultiplier(Alliance.RED));   // 1.0
+        System.out.println(scoringMultiplier(Alliance.BLUE));  // 1.5
+
+        // Loop over all alliances
+        for (Alliance a : Alliance.values()) {
+            System.out.println(a + " multiplier: " + scoringMultiplier(a));
+        }
+    }
+}`}
+  testCases={[
+    { label: "Correct multipliers for both alliances", expected: "1.0\n1.5\nRED multiplier: 1.0\nBLUE multiplier: 1.5" },
+  ]}
+  hint="Use a switch statement with case RED and case BLUE, returning the appropriate value from each. Or use an if/else comparing with ==."
+/>
+
+## What's next
+
+In **Lesson 10**, we'll combine enums with the state machine pattern — using an enum to represent every state a mechanism can be in and a switch to drive transitions. This is the foundation for writing reliable, predictable robot behavior.
