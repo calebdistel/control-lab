@@ -1,0 +1,375 @@
+---
+track: robot-code
+lesson: 12
+title: Competition Readiness
+prereqs: [robot-code-10, robot-code-11]
+objectives:
+  - Execute a pre-match software checklist before every qualifying match
+  - Apply current limits and voltage compensation to prevent brownouts
+  - Implement disabledInit cleanup so the robot is safe when disabled
+  - Use match-time logging and quick-deploy practices to debug and fix issues between matches
+---
+
+import Key from '../../../components/Key.astro';
+import Try from '../../../components/Try.astro';
+import Note from '../../../components/Note.astro';
+import Warn from '../../../components/Warn.astro';
+import Quiz from '../../../components/demos/Quiz.jsx';
+import CodeEditor from '../../../components/demos/CodeEditor.jsx';
+
+## Hook
+
+It is 7:45 AM on day one of the regional. Your first qualifying match is in 45 minutes. The robot worked perfectly in the practice gym. You plug in at the field and the arm immediately jerks to the wrong position. The radio takes 40 seconds to connect. The auto chooser still shows the old routine from last night.
+
+Every one of those problems has a fix. Most of them are a five-minute code change. None of them will get fixed at the field if you don't know what to look for.
+
+Competition readiness is not glamorous. It is checklists, conservative limits, fast deploys, and knowing exactly what to do when things break — before they break.
+
+## Core concept
+
+<Key>
+Competition readiness has three pillars: prevention (current limits, voltage compensation, safe disabledInit), visibility (telemetry and logging from Lesson 10), and process (pre-match checklist, fast deploy, prioritized fix queue). All three must be in place before your first match.
+</Key>
+
+## Brownout prevention
+
+A **brownout** happens when the robot's battery voltage drops below approximately 6.8 V. The roboRIO resets, the radio reboots, and the robot goes limp mid-match. The most common cause: too many high-current motors spiking simultaneously.
+
+### Voltage compensation
+
+Voltage compensation makes motor output consistent regardless of battery state of charge. Without it, a motor commanded to 50% at 12.5 V outputs more power than at 11.0 V — behavior changes as the battery drains.
+
+```java
+// For WPI_TalonFX (Falcon 500 / Kraken X60)
+motor.configVoltageCompSaturation(12.0);
+motor.enableVoltageCompensation(true);
+
+// For CANSparkMax (NEO / NEO 550)
+motor.enableVoltageCompensation(12.0);
+```
+
+Set the saturation voltage to **12.0 V** (nominal full battery). The motor controller scales output so 100% always means 12 V of drive, regardless of actual battery voltage.
+
+### Current limits
+
+Current limits prevent single motors from pulling enough current to sag the entire bus:
+
+```java
+// TalonFX: stator current limit (how hard the motor can push)
+TalonFXConfiguration config = new TalonFXConfiguration();
+config.CurrentLimits.StatorCurrentLimit       = 40.0;  // amps
+config.CurrentLimits.StatorCurrentLimitEnable = true;
+config.CurrentLimits.SupplyCurrentLimit       = 30.0;  // amps from battery
+config.CurrentLimits.SupplyCurrentLimitEnable = true;
+motor.getConfigurator().apply(config);
+
+// CANSparkMax: smart current limit
+motor.setSmartCurrentLimit(40);   // amps, triggers at sustained load
+motor.setSecondaryCurrentLimit(60); // hard cutoff
+```
+
+**Typical limits by motor use:**
+
+| Use | Stator / Smart limit |
+|---|---|
+| Drive motors (NEO / Falcon) | 50–60 A |
+| Arm / elevator (NEO) | 30–40 A |
+| Intake rollers (NEO 550) | 20–25 A |
+| Wrist / small mechanism | 15–20 A |
+
+<Warn>
+Current limits are not set-and-forget. If you change a gear ratio or add a mechanical load, re-validate your limits. A limit that's too low causes the motor to shut off mid-action; too high causes brownouts.
+</Warn>
+
+### Staged startup
+
+If multiple high-current mechanisms initialize at the same time, the startup current spike can itself cause a brownout. Stagger motor initialization or use `WaitCommand` delays in your startup sequence:
+
+```java
+// autonomousInit — stagger spin-up
+new SequentialCommandGroup(
+    new SpinUpShooterCommand(shooter),         // let shooter reach speed first
+    new WaitCommand(0.5),
+    new RetractIntakeCommand(intake)
+).schedule();
+```
+
+## disabledInit cleanup
+
+When the robot is disabled (match end, e-stop, field disable), all motors should stop and mechanisms should return to safe positions. WPILib calls `Robot.disabledInit()` on the rising edge of the disabled state:
+
+```java
+// Robot.java
+@Override
+public void disabledInit() {
+    // Cancel all running commands — this stops all motor output via command end()
+    CommandScheduler.getInstance().cancelAll();
+
+    // Explicitly zero any open-loop outputs as a safety net
+    drive.stop();
+    arm.stop();
+    intake.stop();
+
+    // Move arm to safe stow position (schedule a command — it still runs
+    // while disabled if you use setDefaultCommand correctly, or call
+    // arm.setMotorPower() directly here for a one-shot move)
+    // Note: commands DO NOT run while disabled by default in WPILib.
+    // Set position directly:
+    arm.setMotorPower(0.0);
+}
+```
+
+<Note>
+Commands do NOT execute while the robot is disabled. `CommandScheduler.run()` still ticks, but commands' `execute()` methods are blocked by the scheduler's disabled check. If you need a mechanism to move to a safe position on disable, do it directly in `disabledInit()` — not via a command.
+</Note>
+
+## Graceful degradation
+
+Robots break at competitions. Software can be structured so that a single broken sensor or mechanism doesn't take down the whole robot:
+
+```java
+// Wrap sensor reads in null/validity checks
+public double getArmAngle() {
+    if (encoder == null || !encoderConnected) {
+        DriverStation.reportWarning("Arm encoder disconnected!", false);
+        return 0.0;  // safe default — don't throw
+    }
+    return encoder.getDistance();
+}
+
+// Check CAN device presence at startup
+@Override
+public void robotInit() {
+    if (!armMotor.isAlive()) {
+        DriverStation.reportError("Arm motor CAN fault!", false);
+        armHealthy = false;
+    }
+}
+
+// Gate mechanism commands on health flag
+public Command getArmCommand(double target) {
+    if (!armHealthy) {
+        return Commands.none();  // no-op — safe
+    }
+    return new ArmToPosition(this, target);
+}
+```
+
+**What degrades vs what stops the match:**
+- Broken arm sensor → arm runs open-loop or is disabled; robot can still drive and shoot
+- Broken drive encoder → autonomous is less precise; teleop still works
+- Broken radio → nothing works; that's a hardware fix
+
+## Pre-match software checklist
+
+Run this before **every qualifying match**, not just the first one:
+
+```
+□ Battery voltage > 12.5 V fully charged
+□ roboRIO status light: solid green (code running)
+□ Radio status: connected and locked (solid green)
+□ Driver station: no error/warning banners
+□ SmartDashboard / Shuffleboard open on driver laptop
+□ Auto chooser: correct routine selected for this match
+□ Mechanism positions: arm stowed, intake retracted, climber locked
+□ Quick sanity check in test mode: each axis and button responds
+□ Confirm team number in robot code matches physical robot label
+□ Git: latest code deployed (check deploy timestamp in DS log)
+```
+
+Add team-specific items (e.g., "Vision camera connected and target visible").
+
+<Note>
+Print the checklist and tape it to the driver station. Under match pressure, people skip steps they think they'll remember. The checklist exists because everyone forgets things under pressure.
+</Note>
+
+## Quick deploy workflow
+
+Slow deploys waste time between matches. Optimize:
+
+```bash
+# Standard deploy (builds + deploys)
+./gradlew deploy
+
+# If code didn't change, just restart the robot program (faster)
+# Use the WPILib VS Code extension: Ctrl+Shift+P → "WPILib: Deploy Robot Code"
+
+# Kill switch: if robot is misbehaving, disable from DS first, then redeploy
+```
+
+**Between-match fix process:**
+1. Disable robot immediately after match ends.
+2. Review Driver Station log for errors and warnings (View → Log Viewer).
+3. Review DataLog in AdvantageScope — identify timestamp of failure.
+4. Fix the specific issue. Do not refactor or improve unrelated code between matches.
+5. Run `./gradlew deploy`. Verify DS shows connected + running.
+6. Confirm the fix works in test mode before returning to the field.
+
+**Never deploy untested code to the robot at the field.** If you're unsure, keep the last known-good version.
+
+## Match-time debugging
+
+Your telemetry from Lesson 10 is your primary debugging tool during a match:
+
+- **Motor current spike** in DataLog → mechanical jam or too-aggressive command
+- **Encoder value frozen** → encoder disconnected or channel swapped
+- **Battery voltage dip** below 10 V → brownout cause identified
+- **Command scheduler log** → which command was running when the failure occurred
+
+Add match-event markers to the log:
+
+```java
+// In autonomousInit and teleopInit, log the timestamp
+@Override
+public void autonomousInit() {
+    DataLogManager.log("=== AUTONOMOUS STARTED ===");
+    autoCommand = container.getAutonomousCommand();
+    if (autoCommand != null) autoCommand.schedule();
+}
+
+@Override
+public void teleopInit() {
+    DataLogManager.log("=== TELEOP STARTED ===");
+    if (autoCommand != null) autoCommand.cancel();
+}
+```
+
+`DataLogManager.log(String)` writes a timestamped string entry to the log file. These markers make it easy to find the right section of a long log.
+
+## What happens when the robot disconnects
+
+If the robot loses communication with the driver station:
+
+1. The robot immediately goes into a **communication timeout** state.
+2. All motor outputs are set to zero by the roboRIO (hardware-enforced).
+3. After 1 second of no communication, the robot is considered disabled.
+4. When communication is restored, the driver station must **re-enable** the robot.
+
+This is intentional safety behavior — you cannot override it in code. Your job is to ensure mechanisms land in a safe position when power is cut (use spring-loaded mechanical safeties, brake mode on motors).
+
+**Motor brake vs coast on disconnect:**
+
+```java
+// TalonFX
+motor.setNeutralMode(NeutralModeValue.Brake);  // holds position on disable
+
+// CANSparkMax
+motor.setIdleMode(CANSparkMax.IdleMode.kBrake);
+```
+
+Brake mode on drive motors helps the robot stay put when disabled at the field. Brake mode on arm motors prevents gravity-drop on disable.
+
+## Prioritizing match-day fixes
+
+Not every bug deserves to be fixed between matches. Use a severity triage:
+
+| Severity | Description | Action |
+|---|---|---|
+| **P0 – Robot-stopping** | Robot can't drive, can't score at all | Fix immediately |
+| **P1 – Major scoring impairment** | Primary mechanism broken, fallback possible | Fix if time allows |
+| **P2 – Minor impairment** | Secondary mechanism unreliable | Fix overnight |
+| **P3 – Polish / improvement** | Code works but could be better | After event |
+
+**At the field, only fix P0 and clear P1s if you have 15+ minutes.** Every change is a new opportunity for a new bug.
+
+<Quiz
+  client:load
+  question="Commands do not execute while the robot is disabled. How do you move a mechanism to a safe stow position when the robot is disabled?"
+  options={[
+    "Schedule a StowCommand in disabledInit() — it will run when re-enabled",
+    "Call the motor output method directly in disabledInit(), not via a command",
+    "Use a whileTrue Trigger that fires whenever DriverStation.isDisabled() returns true",
+    "Set a flag in disabledInit() and check it in the next robotPeriodic() call"
+  ]}
+  correct={1}
+  explanation="Commands do not execute while disabled. Direct hardware calls (motor.set(), solenoid.set()) still work in disabledInit() and are the correct way to immediately position a mechanism when the robot is disabled. Scheduling a command is useless — it won't execute until re-enabled."
+/>
+
+<Quiz
+  client:load
+  question="Your robot browses out mid-match when the arm extends and the drive motors simultaneously accelerate hard. What is the most targeted fix?"
+  options={[
+    "Replace the battery with a fresh one and hope for the best",
+    "Add stator current limits to both the arm and drive motors to cap their peak draw",
+    "Remove the arm mechanism from the robot entirely",
+    "Disable voltage compensation so motors use less power"
+  ]}
+  correct={1}
+  explanation="Brownouts are caused by too much current draw at once, which sags battery voltage. Stator current limits directly cap how much current each motor can pull, preventing the simultaneous spike. Disabling voltage compensation would make the problem worse by allowing unregulated power draw."
+/>
+
+## Key takeaways
+
+- Enable voltage compensation (12 V saturation) on all drive and arm motors to normalize behavior as the battery drains.
+- Set stator/supply current limits to prevent brownouts from current spikes; typical ranges: 40–60 A drive, 20–40 A arm.
+- `disabledInit()` must stop all motors and return mechanisms to safe positions — commands don't run while disabled, so call hardware methods directly.
+- Deploy the pre-match checklist as a physical printed card at the driver station; run it before every match.
+- Between matches: review DS logs and DataLog, fix P0 issues only, test before returning to the field.
+- `DataLogManager.log()` text markers make it easy to find autonomous/teleop boundaries in post-match log review.
+
+## Common confusions
+
+**"Voltage compensation is enabled but the robot still brownsout."** Voltage compensation stabilizes the *relationship* between command and output — it doesn't reduce current draw. The fix for brownout is current limits, not voltage compensation. Use both.
+
+**"I set brake mode but the arm still falls when disabled."** Brake mode resists back-driving by the motor, but a heavily loaded arm can overcome it. Add a mechanical brake or a physical hard stop. Code cannot substitute for mechanical safety.
+
+**"My disabledInit() stows the arm but it jerks back out when re-enabled."** Your default command or a persistent trigger is moving the arm back when teleop starts. Check your default command's initial output and ensure it reads current position before commanding movement.
+
+**"The deploy takes 90 seconds."** A full Gradle build takes longest. Use the WPILib VS Code extension's deploy button, which caches the build. If you only changed one file, only that file is recompiled.
+
+## Challenge
+
+<Try>
+Given the list of match-day issues below, classify each by severity (P0, P1, P2, P3) and determine the recommended action. Write your classification logic as code that outputs the recommendation string.
+</Try>
+
+<CodeEditor
+  client:load
+  starterCode={`// Classify match-day issues by severity.
+// Rules:
+//   P0: robot cannot drive OR cannot score at all
+//   P1: primary scoring mechanism broken, robot still drives
+//   P2: secondary/redundant feature unreliable
+//   P3: polish, no functional impact
+//
+// Return: "P0 - Fix immediately", "P1 - Fix if time allows",
+//         "P2 - Fix overnight", or "P3 - After event"
+
+public class IssueTriage {
+
+    static String classify(String issue) {
+        // TODO: implement classification based on severity keywords
+        // Hints:
+        //   "cannot drive"  → P0
+        //   "shooter broken" → P1 (can still drive, primary mechanism gone)
+        //   "auto chooser"  → P2 (defaults to a working auto)
+        //   "button label"  → P3 (cosmetic comment in code)
+        return "UNCLASSIFIED";
+    }
+
+    public static void main(String[] args) {
+        System.out.println(classify("cannot drive - CAN bus fault"));        // P0
+        System.out.println(classify("shooter broken - can still intake"));   // P1
+        System.out.println(classify("auto chooser shows wrong default"));    // P2
+        System.out.println(classify("button label comment is outdated"));    // P3
+        System.out.println(classify("cannot drive - radio disconnected"));   // P0
+    }
+}`}
+  testCases={[
+    { label: "CAN bus fault",           expected: "P0 - Fix immediately"      },
+    { label: "shooter broken",          expected: "P1 - Fix if time allows"   },
+    { label: "auto chooser default",    expected: "P2 - Fix overnight"        },
+    { label: "button label comment",    expected: "P3 - After event"          },
+    { label: "radio disconnected",      expected: "P0 - Fix immediately"      }
+  ]}
+  hint="Use String.contains() to check for keywords: 'cannot drive' → P0, 'broken' → P1, 'chooser' or 'default' → P2, 'label' or 'comment' → P3. Return the full string including the prefix."
+/>
+
+## What's next
+
+You've completed the Robot Code curriculum track. From robot structure and commands through simulation, telemetry, and competition readiness — you now have the full picture of a production-quality FRC robot program.
+
+Recommended next tracks:
+- **Control Systems** — PID tuning, feedforward, and motion profiling for precise mechanism control
+- **Software Engineering** — version control, code review, CI/CD pipelines for a multi-person team
+- **FRC Intro** — if you want to revisit the field rules, game manual, and match strategy with new eyes
