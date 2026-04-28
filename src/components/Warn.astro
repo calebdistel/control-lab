@@ -1,0 +1,32 @@
+---
+interface Props { label?: string; }
+const { label = 'Heads up' } = Astro.props;
+---
+<div class="callout callout-warn">
+  <span class="callout-label">⚠ {label}</span>
+  <div class="callout-body"><slot /></div>
+</div>
+
+<style>
+.callout-warn {
+  border: 1px solid #7a3020;
+  background: rgba(120,48,32,0.18);
+  border-radius: var(--r);
+  padding: 1rem 1.25rem;
+  margin: 1.75rem 0;
+}
+.callout-label {
+  display: block;
+  font-family: "Audiowide", "Kanit", sans-serif;
+  font-size: 0.65rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #f08060;
+  margin-bottom: 0.5rem;
+}
+.callout-body :global(p) {
+  color: #e8c0a0;
+  margin: 0;
+  line-height: 1.7;
+}
+</style>

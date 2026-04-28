@@ -1,0 +1,181 @@
+---
+track: fundamentals
+lesson: 5
+title: Loops
+prereqs: [fundamentals-04]
+objectives:
+  - Predict when a while loop terminates and what value its variables hold afterward
+  - Explain why periodic() is a loop and what "blocking" it means
+  - Identify the risk of an infinite loop on a robot
+---
+
+import Key from '../../../components/Key.astro';
+import Try from '../../../components/Try.astro';
+import Warn from '../../../components/Warn.astro';
+import Note from '../../../components/Note.astro';
+import CodeTrace from '../../../components/demos/CodeTrace.jsx';
+import Quiz from '../../../components/demos/Quiz.jsx';
+import CodeEditor from '../../../components/demos/CodeEditor.jsx';
+
+## Hook
+
+A teammate writes code to auto-align the robot. It works perfectly — the arm moves to exactly 90° on the first try. But the moment you enable, the robot dashboard freezes. The joysticks stop responding. The entire robot locks up for two seconds, then continues.
+
+The code wrote a `while` loop that ran inside `periodic()`:
+
+```java
+void periodic() {
+    while (arm.getAngle() < 90) {
+        arm.setMotor(0.5);
+    }
+}
+```
+
+The WPILib scheduler calls `periodic()` every 20ms. The while loop inside it never returns until the arm reaches 90°. While it's running, nothing else in the robot's program can execute — no joystick input, no safety checks, nothing.
+
+## Core concept
+
+<Key>
+A loop repeats its body until its condition becomes false. On a robot, `periodic()` is the loop — it runs 50 times per second. Code inside `periodic()` must return quickly every call; blocking loops go outside or in separate threads.
+</Key>
+
+## Walk-through
+
+A `while` loop:
+
+```java
+int i = 0;
+while (i < 4) {
+    i = i + 1;
+}
+// i is 4 here
+```
+
+A `for` loop (equivalent, more compact):
+
+```java
+for (int i = 0; i < 4; i++) {
+    // body
+}
+```
+
+Use `for` when you know how many iterations you want. Use `while` when you're waiting for a condition.
+
+**The FRC robot loop**
+
+Your robot's main loop already exists — it's the WPILib scheduler. It calls `periodic()` on every subsystem and runs any active commands, 50 times per second. You don't write that loop; you write what goes *inside* it.
+
+The correct way to handle the arm alignment above:
+
+```java
+void periodic() {
+    if (arm.getAngle() < 90) {
+        arm.setMotor(0.5);
+    } else {
+        arm.setMotor(0.0);
+    }
+}
+```
+
+This checks the condition once per call and returns immediately. The arm moves a little each cycle. Over many cycles, it reaches 90°.
+
+<Note>
+This is exactly the 5-step controller from Lesson 01. `periodic()` is step 5 — "go back to step 1" — built into the framework.
+</Note>
+
+<Warn>
+Never use `Thread.sleep()`, `while (condition) {}` blocking loops, or any other delay inside `periodic()`. The robot scheduler will watchdog-trip and report brownout or loop overrun errors.
+</Warn>
+
+## Interactive demo
+
+Trace a `while` loop that counts up. Watch how the condition is checked before each iteration:
+
+<CodeTrace
+  client:load
+  variables={{ i: 0, total: 0 }}
+  steps={[
+    { code: "check: i < 4?",      state: { i: 0, total: 0 },  comment: "0 < 4 → true" },
+    { code: "total = total + i",  state: { i: 0, total: 0 },  comment: "0+0=0" },
+    { code: "i = i + 1",          state: { i: 1, total: 0 },  comment: "i is now 1" },
+    { code: "check: i < 4?",      state: { i: 1, total: 0 },  comment: "1 < 4 → true" },
+    { code: "total = total + i",  state: { i: 1, total: 1 },  comment: "0+1=1" },
+    { code: "i = i + 1",          state: { i: 2, total: 1 },  comment: "i is now 2" },
+    { code: "check: i < 4?",      state: { i: 2, total: 1 },  comment: "2 < 4 → true" },
+    { code: "total = total + i",  state: { i: 2, total: 3 },  comment: "1+2=3" },
+    { code: "i = i + 1",          state: { i: 3, total: 3 },  comment: "i is now 3" },
+    { code: "check: i < 4?",      state: { i: 3, total: 3 },  comment: "3 < 4 → true" },
+    { code: "total = total + i",  state: { i: 3, total: 6 },  comment: "3+3=6" },
+    { code: "i = i + 1",          state: { i: 4, total: 6 },  comment: "i is now 4" },
+    { code: "check: i < 4?",      state: { i: 4, total: 6 },  comment: "4 < 4 → false, exit" },
+  ]}
+/>
+
+## Try it yourself
+
+<Try>
+A different loop with a different condition. Predict the final values of `i` and `product` without running it.
+
+```java
+int i = 1;
+int product = 1;
+while (i <= 4) {
+    product = product * i;
+    i = i + 1;
+}
+```
+</Try>
+
+<Quiz
+  client:load
+  question="What is product when the loop ends?"
+  type="number"
+  correct={24}
+  explanation="1×1=1, 1×2=2, 2×3=6, 6×4=24. This computes 4 factorial (4!). i ends at 5 (the value that failed the condition)."
+/>
+
+<Quiz
+  client:load
+  question="What is i when the loop ends?"
+  type="number"
+  correct={5}
+  explanation="The loop runs while i ≤ 4. After the last iteration (i=4), i becomes 5. Then 5 ≤ 4 is false, so the loop exits with i = 5."
+/>
+
+## Key takeaways
+
+- A `while` loop checks its condition before each iteration. When the condition is false, the loop exits immediately.
+- The final value of the loop variable is the first value that failed the condition.
+- `periodic()` is the robot's main loop — it must return within ~20ms or the robot misbehaves.
+- Replace blocking `while` loops in `periodic()` with stateful conditionals that check once and return.
+
+## Common confusions
+
+**"I wrote `while (true)` — now the robot doesn't respond."** You've blocked `periodic()`. Kill the code (`Ctrl+C` or disable), remove the blocking loop, and use a state machine or command instead.
+
+**"My loop runs one too many or one too few times."** Check whether the condition uses `<` or `<=`. Off-by-one errors are extremely common.
+
+## Challenge
+
+<Try>
+The driver calls a countdown before auto starts. Use a loop to print the numbers 5 down to 1, then print `"GO!"`. No hardcoded print statements — one loop handles the countdown.
+</Try>
+
+<CodeEditor
+  client:load
+  starterCode={`public class Main {
+    public static void main(String[] args) {
+        // Print 5, 4, 3, 2, 1, then "GO!"
+        // Use a loop — don't write 5 separate println calls
+
+    }
+}`}
+  testCases={[
+    { label: "Countdown from 5 to 1 then GO!", expected: "5\n4\n3\n2\n1\nGO!" },
+  ]}
+  hint="Start i at 5, loop while i >= 1, decrement each iteration. Print 'GO!' after the loop."
+/>
+
+## What's next
+
+In **Lesson 05**, we'll look at functions — how to name and reuse blocks of code so you're not copying the same logic into five different places.

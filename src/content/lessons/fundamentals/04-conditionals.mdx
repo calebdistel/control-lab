@@ -1,0 +1,167 @@
+---
+track: fundamentals
+lesson: 4
+title: Conditionals
+prereqs: [fundamentals-03]
+objectives:
+  - Write an if/else chain that produces the correct output for any input
+  - Trace execution through a conditional and identify which branch runs
+  - Avoid the "always true" and "unreachable else" mistakes
+---
+
+import Key from '../../../components/Key.astro';
+import Try from '../../../components/Try.astro';
+import Warn from '../../../components/Warn.astro';
+import CodeTrace from '../../../components/demos/CodeTrace.jsx';
+import Quiz from '../../../components/demos/Quiz.jsx';
+import CodeEditor from '../../../components/demos/CodeEditor.jsx';
+
+## Hook
+
+Your intake runs the moment the robot enables. It doesn't care whether there's a game piece in front of it or not — it just spins. When there's already a piece inside, it keeps trying to pull in another one and jams.
+
+The motor is doing exactly what you told it. You never told it to *stop*.
+
+The fix requires a decision: "if there's no piece, spin; otherwise, stop." That's a conditional.
+
+## Core concept
+
+<Key>
+A conditional executes a block of code only when a condition is true. The program evaluates the condition, picks one branch, skips the rest, and continues.
+</Key>
+
+## Walk-through
+
+The basic form in Java:
+
+```java
+if (condition) {
+    // runs when condition is true
+} else if (otherCondition) {
+    // runs when first is false AND this is true
+} else {
+    // runs when all conditions above are false
+}
+```
+
+For the intake example:
+
+```java
+void periodic() {
+    if (!sensor.hasGamePiece()) {
+        motor.set(0.8);    // spin to intake
+    } else {
+        motor.set(0.0);    // stop — piece already inside
+    }
+}
+```
+
+The `else` branch is the one most beginners forget. Any time you write `if`, ask yourself: "what should happen when this is false?" The answer might be "nothing" — but make that explicit.
+
+**Comparison operators** you'll use constantly:
+
+| Symbol | Meaning |
+|--------|---------|
+| `==` | equal to |
+| `!=` | not equal to |
+| `<` / `>` | less / greater than |
+| `<=` / `>=` | less-or-equal / greater-or-equal |
+| `&&` | AND (both must be true) |
+| `\|\|` | OR (either can be true) |
+
+<Warn>
+`=` assigns a value. `==` compares two values. Writing `if (x = 5)` is almost always a bug.
+</Warn>
+
+## Interactive demo
+
+An arm controller with three zones. Step through to see which branch runs for each value of `angle`:
+
+<CodeTrace
+  client:load
+  variables={{ angle: 95, motor: "?" }}
+  steps={[
+    { code: "if angle < 88:",             state: { angle: 95, motor: "?" },    comment: "95 < 88? false" },
+    { code: "  motor = 'up'",             state: { angle: 95, motor: "?" },    comment: "skipped" },
+    { code: "else if angle > 92:",        state: { angle: 95, motor: "?" },    comment: "95 > 92? true" },
+    { code: "  motor = 'down'",           state: { angle: 95, motor: "down" }, comment: "runs!" },
+    { code: "else:  motor = 'hold'",      state: { angle: 95, motor: "down" }, comment: "skipped" },
+  ]}
+/>
+
+## Try it yourself
+
+<Try>
+Same arm controller, but now `angle = 74`. Trace through and predict which branch runs.
+
+```java
+if (angle < 88) {
+    motor = "up";
+} else if (angle > 92) {
+    motor = "down";
+} else {
+    motor = "hold";
+}
+```
+</Try>
+
+<Quiz
+  client:load
+  question="When angle = 74, what does motor get set to?"
+  options={["up", "down", "hold", "nothing — no branch runs"]}
+  correct={0}
+  explanation="74 < 88 is true, so the first branch runs immediately. The else-if and else are skipped entirely."
+/>
+
+<Quiz
+  client:load
+  question="When angle = 90, what does motor get set to?"
+  options={["up", "down", "hold", "nothing — no branch runs"]}
+  correct={2}
+  explanation="90 < 88 is false. 90 > 92 is false. So the else branch runs: motor = 'hold'."
+/>
+
+## Key takeaways
+
+- A conditional evaluates its condition and runs exactly one branch.
+- Once a true branch is found, all remaining else-if and else branches are skipped.
+- Always consider what should happen in the false case — even if the answer is "nothing."
+- `=` assigns; `==` compares. Mixing them up is one of the most common bugs in any language.
+
+## Common confusions
+
+**"I have three if statements in a row, isn't that the same as if/else-if?"** No. Three separate `if` statements all evaluate independently. If the first one changes a variable, the second one sees the new value. `else if` short-circuits — once a true branch is found, the rest don't run.
+
+**"My condition is always true no matter what I do."** Check for `=` vs `==`. Also check whether you're comparing the right variables — printing intermediate values helps.
+
+## Challenge
+
+<Try>
+Write a `batteryStatus` method that classifies a battery voltage reading. Use it to print the status for three readings.
+
+Rules: voltage ≥ 12.0 → `"OK"`, 9.0 ≤ voltage < 12.0 → `"LOW"`, voltage < 9.0 → `"CRITICAL"`
+</Try>
+
+<CodeEditor
+  client:load
+  starterCode={`public class Main {
+    static String batteryStatus(double voltage) {
+        // Return "OK", "LOW", or "CRITICAL" based on the rules
+        return ""; // replace this
+    }
+
+    public static void main(String[] args) {
+        System.out.println(batteryStatus(12.6));
+        System.out.println(batteryStatus(10.2));
+        System.out.println(batteryStatus(8.4));
+    }
+}`}
+  testCases={[
+    { label: "12.6 → OK, 10.2 → LOW, 8.4 → CRITICAL", expected: "OK\nLOW\nCRITICAL" },
+  ]}
+  hint="Use an if/else-if/else chain. The order matters — check the highest threshold first."
+/>
+
+## What's next
+
+In **Lesson 04**, we'll look at loops — including why `periodic()` is the most important loop in your robot program and what happens when you accidentally block it.

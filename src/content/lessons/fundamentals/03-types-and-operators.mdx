@@ -1,0 +1,201 @@
+---
+track: fundamentals
+lesson: 3
+title: Types and operators
+prereqs: [fundamentals-02]
+objectives:
+  - Name the four primitive types used most in robot code and give an example value for each
+  - Evaluate arithmetic and comparison expressions without running them
+  - Explain why dividing two integers in Java can silently discard the decimal
+---
+
+import Key from '../../../components/Key.astro';
+import Try from '../../../components/Try.astro';
+import Note from '../../../components/Note.astro';
+import Warn from '../../../components/Warn.astro';
+import CodeTrace from '../../../components/demos/CodeTrace.jsx';
+import Quiz from '../../../components/demos/Quiz.jsx';
+import CodeEditor from '../../../components/demos/CodeEditor.jsx';
+
+## Hook
+
+You write code to run a motor at half speed:
+
+```java
+int speed = 1 / 2;
+motor.set(speed);
+```
+
+The motor doesn't move. `1 / 2` in Java is `0`, not `0.5`. Integer division throws away the decimal. The robot does exactly what you wrote — not what you meant.
+
+## Core concept
+
+<Key>
+Every value in Java has a **type** — a declaration of what kind of data it is and what operations make sense on it. Using the wrong type produces wrong answers silently.
+</Key>
+
+## The four types you'll use constantly
+
+| Type | What it holds | Example | Robot use |
+|------|--------------|---------|-----------|
+| `int` | Whole numbers | `42`, `-7`, `0` | Loop counters, game-piece counts |
+| `double` | Decimal numbers | `0.5`, `-1.0`, `90.3` | Motor power, angles, speeds |
+| `boolean` | True or false | `true`, `false` | Sensor flags, mode switches |
+| `String` | Text | `"hello"`, `"arm"` | Log messages, names |
+
+```java
+int gamePieces = 3;
+double motorPower = -0.75;
+boolean hasPiece = true;
+String subsystemName = "intake";
+```
+
+## Arithmetic operators
+
+These work on `int` and `double`:
+
+| Operator | Meaning | Example | Result |
+|----------|---------|---------|--------|
+| `+` | Add | `3 + 2` | `5` |
+| `-` | Subtract | `90.0 - 45.0` | `45.0` |
+| `*` | Multiply | `0.5 * 2` | `1.0` |
+| `/` | Divide | `10.0 / 4` | `2.5` |
+| `%` | Remainder | `10 % 3` | `1` |
+
+<Warn>
+**Integer division truncates.** When both operands are `int`, Java discards the decimal:
+`7 / 2` → `3`, not `3.5`. Use `7.0 / 2` or `(double) 7 / 2` when you need the fraction.
+</Warn>
+
+## Comparison operators
+
+These always produce a `boolean`:
+
+| Operator | Meaning | Example | Result |
+|----------|---------|---------|--------|
+| `==` | Equal | `angle == 90` | `true` or `false` |
+| `!=` | Not equal | `count != 0` | `true` or `false` |
+| `<` | Less than | `power < 0.5` | `true` or `false` |
+| `>` | Greater than | `angle > 88` | `true` or `false` |
+| `<=` | Less or equal | `speed <= 1.0` | `true` or `false` |
+| `>=` | Greater or equal | `angle >= 0` | `true` or `false` |
+
+## Logical operators
+
+These combine `boolean` values:
+
+| Operator | Meaning | Example | Result |
+|----------|---------|---------|--------|
+| `&&` | AND (both true) | `hasPiece && armUp` | `true` only if both |
+| `\|\|` | OR (either true) | `atMin \|\| atMax` | `true` if either |
+| `!` | NOT (flip it) | `!hasPiece` | opposite of `hasPiece` |
+
+Robot example:
+```java
+boolean readyToShoot = hasPiece && armAtTarget && driverPressed;
+boolean limitHit = atTopLimit || atBottomLimit;
+```
+
+## Interactive demo
+
+Trace through this code. Notice how integer division and comparisons interact:
+
+<CodeTrace
+  client:load
+  code={`int pieces = 7;
+int slots = 2;
+int perSlot = pieces / slots;
+double exact = pieces / (double) slots;
+boolean full = pieces >= 5;
+boolean needMore = !full;`}
+  variables={{ pieces: 7, slots: 2, perSlot: "–", exact: "–", full: "–", needMore: "–" }}
+  steps={[
+    { line: 1, label: "pieces = 7 (int — whole number)", state: { pieces: 7, slots: 2, perSlot: "–", exact: "–", full: "–", needMore: "–" } },
+    { line: 2, label: "slots = 2 (int)", state: { pieces: 7, slots: 2, perSlot: "–", exact: "–", full: "–", needMore: "–" } },
+    { line: 3, label: "7 / 2 → both ints → truncates → 3, not 3.5", state: { pieces: 7, slots: 2, perSlot: 3, exact: "–", full: "–", needMore: "–" } },
+    { line: 4, label: "7 / 2.0 → promotes to double → 3.5", state: { pieces: 7, slots: 2, perSlot: 3, exact: 3.5, full: "–", needMore: "–" } },
+    { line: 5, label: "7 >= 5 → true", state: { pieces: 7, slots: 2, perSlot: 3, exact: 3.5, full: true, needMore: "–" } },
+    { line: 6, label: "!true → false — we don't need more pieces", state: { pieces: 7, slots: 2, perSlot: 3, exact: 3.5, full: true, needMore: false } },
+  ]}
+/>
+
+## Try it yourself
+
+<Try>
+Before stepping through, predict each value:
+
+```java
+double power = 3.0 / 4;
+int count = 10 % 3;
+boolean inRange = (power > 0.5) && (count < 5);
+```
+</Try>
+
+<CodeTrace
+  client:load
+  code={`double power = 3.0 / 4;
+int count = 10 % 3;
+boolean inRange = (power > 0.5) && (count < 5);`}
+  variables={{ power: "–", count: "–", inRange: "–" }}
+  steps={[
+    { line: 1, label: "3.0 / 4 → 3.0 is double, so result is double: 0.75", state: { power: 0.75, count: "–", inRange: "–" } },
+    { line: 2, label: "10 % 3 → 10 = 3×3 + 1 → remainder is 1", state: { power: 0.75, count: 1, inRange: "–" } },
+    { line: 3, label: "0.75 > 0.5 → true; 1 < 5 → true; true && true → true", state: { power: 0.75, count: 1, inRange: true } },
+  ]}
+/>
+
+<Quiz
+  client:load
+  question="What does int result = 9 / 2 evaluate to?"
+  type="number"
+  correct={4}
+  explanation="Both operands are int, so Java uses integer division and truncates: 9 ÷ 2 = 4.5 → 4. If you wanted 4.5, you'd write 9.0 / 2 or (double) 9 / 2."
+/>
+
+## Key takeaways
+
+- Use `double` for anything that can have a decimal (motor power, angles, distances).
+- Use `int` for counts and loop indices where fractions don't make sense.
+- `int / int` always truncates — add `.0` to one operand when you need precision.
+- Comparison operators return `boolean`, which is what `if` statements require.
+
+## Common confusions
+
+**"Why does `1 / 2` equal 0?"** Java doesn't know you want a fraction — you gave it two integers. It treats `/` as "how many whole times does 2 go into 1?" The answer is 0.
+
+**"When do I use `=` vs `==`?"** Single `=` assigns a value (`angle = 90`). Double `==` compares two values (`angle == 90`). Using `=` inside an `if` is a common bug Java will usually catch.
+
+## Challenge
+
+<Try>
+An encoder reads 1500 ticks. The maximum is 4000 ticks. Compute the position as a percentage (0.0 to 1.0) and print it. Also check: is the position past the halfway point? Print `true` or `false`.
+
+Watch out for integer division — both values start as `int`.
+</Try>
+
+<CodeEditor
+  client:load
+  starterCode={`public class Main {
+    public static void main(String[] args) {
+        int ticks = 1500;
+        int maxTicks = 4000;
+
+        // Compute position as a double (e.g. 0.375)
+        double position = 0; // fix this
+
+        // Is the position past halfway (> 0.5)?
+        boolean pastHalf = false; // fix this
+
+        System.out.println(position);
+        System.out.println(pastHalf);
+    }
+}`}
+  testCases={[
+    { label: "position = 1500/4000 = 0.375, pastHalf = false", expected: "0.375\nfalse" },
+  ]}
+  hint="Use (double) ticks / maxTicks to avoid integer division. pastHalf is just position > 0.5."
+/>
+
+## What's next
+
+In **Lesson 04**, we'll use these comparisons inside `if/else` chains to make the robot choose different behavior depending on sensor values.

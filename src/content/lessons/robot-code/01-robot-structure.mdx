@@ -1,0 +1,205 @@
+---
+track: robot-code
+lesson: 1
+title: The WPILib robot structure
+prereqs: [fundamentals-06]
+objectives:
+  - Describe the role of Robot.java, RobotContainer, Subsystems, and Commands
+  - Trace the startup sequence from power-on to first joystick input
+  - Explain why all hardware objects must be created before commands run
+---
+
+import Key from '../../../components/Key.astro';
+import Note from '../../../components/Note.astro';
+import Warn from '../../../components/Warn.astro';
+import CodeTrace from '../../../components/demos/CodeTrace.jsx';
+import Quiz from '../../../components/demos/Quiz.jsx';
+
+## Hook
+
+Open a new WPILib project and you're greeted with six files, two folders, and a `build.gradle`. Where do you even start?
+
+Most beginners drop their code into `Robot.java` and it works — until it doesn't. The motor that used to work stops responding. Two subsystems fight over the same hardware object. The autonomous routine runs half of itself, then stops.
+
+The WPILib architecture isn't bureaucracy. It exists to prevent exactly these failures. Understanding it is the difference between code that "works on my machine" and code that survives a competition.
+
+## Core concept
+
+<Key>
+A WPILib robot program has four layers: Robot.java (the entry point), RobotContainer (the wiring), Subsystems (hardware + logic), and Commands (actions). Each layer has one job and talks to the others through a strict interface.
+</Key>
+
+## Walk-through
+
+**Layer 1: `Robot.java`**
+
+The entry point. WPILib calls its methods based on robot state:
+
+```java
+public class Robot extends TimedRobot {
+    private RobotContainer container;
+
+    public void robotInit() {
+        container = new RobotContainer();  // runs once at startup
+    }
+
+    public void robotPeriodic() {
+        CommandScheduler.getInstance().run();  // runs every 20ms, always
+    }
+
+    public void teleopInit() { /* ... */ }
+    public void autonomousInit() { /* ... */ }
+}
+```
+
+Almost nothing else belongs in `Robot.java`. Its only job is to create `RobotContainer` and keep the scheduler ticking.
+
+**Layer 2: `RobotContainer`**
+
+Where you wire the robot. Created once at startup, it:
+- Creates every Subsystem
+- Creates default Commands (what a subsystem does when nothing else is running)
+- Binds buttons to Commands
+
+```java
+public class RobotContainer {
+    private final ArmSubsystem arm = new ArmSubsystem();
+    private final XboxController controller = new XboxController(0);
+
+    public RobotContainer() {
+        configureBindings();
+    }
+
+    private void configureBindings() {
+        new JoystickButton(controller, XboxController.Button.kA.value)
+            .onTrue(new ArmToPositionCommand(arm, 90.0));
+    }
+}
+```
+
+**Layer 3: Subsystems**
+
+One class per mechanism. A Subsystem owns its hardware objects and exposes methods for commands to call.
+
+```java
+public class ArmSubsystem extends SubsystemBase {
+    private final CANSparkMax motor = new CANSparkMax(1, MotorType.kBrushless);
+    private final Encoder encoder = new Encoder(0, 1);
+
+    public void setMotorPower(double power) {
+        motor.set(power);
+    }
+
+    public double getAngle() {
+        return encoder.getDistance();
+    }
+
+    @Override
+    public void periodic() {
+        SmartDashboard.putNumber("Arm/angle", getAngle());
+    }
+}
+```
+
+A Subsystem can only be "owned" by one Command at a time — the scheduler enforces this. This prevents two Commands from fighting over the same motor.
+
+**Layer 4: Commands**
+
+Commands describe *what* the robot does, not *how the hardware works*. A Command uses a Subsystem's public methods.
+
+```java
+public class ArmToPositionCommand extends CommandBase {
+    private final ArmSubsystem arm;
+    private final double target;
+
+    public ArmToPositionCommand(ArmSubsystem arm, double target) {
+        this.arm = arm;
+        this.target = target;
+        addRequirements(arm);  // claims exclusive ownership
+    }
+
+    @Override
+    public void execute() {
+        double error = target - arm.getAngle();
+        arm.setMotorPower(error > 0 ? 0.4 : -0.4);
+    }
+
+    @Override
+    public boolean isFinished() {
+        return Math.abs(target - arm.getAngle()) < 2.0;
+    }
+}
+```
+
+<Note>
+`addRequirements(arm)` is what prevents conflicts. If another Command tries to use the arm while this one is running, the scheduler cancels the lower-priority Command first.
+</Note>
+
+<Warn>
+Never create hardware objects (motors, sensors) inside a Command. They belong in the Subsystem. If two Commands each created a `CANSparkMax(1, ...)`, they'd both try to initialize the same CAN ID — undefined behavior.
+</Warn>
+
+## Interactive demo
+
+Trace the startup sequence from power-on to the driver pressing a button:
+
+<CodeTrace
+  client:load
+  variables={{ phase: "boot", subsystems: "none", commands: "none", scheduler: "off" }}
+  steps={[
+    { code: "Robot.robotInit()",            state: { phase: "init",      subsystems: "none",     commands: "none",      scheduler: "off" }, comment: "runs once" },
+    { code: "new RobotContainer()",         state: { phase: "init",      subsystems: "creating", commands: "none",      scheduler: "off" }, comment: "wiring begins" },
+    { code: "new ArmSubsystem()",           state: { phase: "init",      subsystems: "ready",    commands: "none",      scheduler: "off" }, comment: "hardware created" },
+    { code: "configureBindings()",          state: { phase: "init",      subsystems: "ready",    commands: "bound",     scheduler: "off" }, comment: "buttons wired" },
+    { code: "teleopEnabled",                state: { phase: "teleop",    subsystems: "ready",    commands: "bound",     scheduler: "on"  }, comment: "match starts" },
+    { code: "robotPeriodic() ×50/sec",      state: { phase: "running",   subsystems: "ready",    commands: "bound",     scheduler: "on"  }, comment: "loop ticking" },
+    { code: "driver presses A button",      state: { phase: "running",   subsystems: "ready",    commands: "scheduled", scheduler: "on"  }, comment: "command triggered" },
+    { code: "ArmToPositionCommand.execute()", state: { phase: "running", subsystems: "ready",    commands: "running",   scheduler: "on"  }, comment: "runs each tick" },
+  ]}
+/>
+
+## Try it yourself
+
+<Quiz
+  client:load
+  question="Where should you create a CANSparkMax motor object?"
+  options={[
+    "In Robot.java, inside robotInit()",
+    "In the Subsystem class, as a field",
+    "In the Command class, inside execute()",
+    "In RobotContainer, passed to the Subsystem constructor",
+  ]}
+  correct={1}
+  explanation="Hardware belongs in the Subsystem as a field. It's created once when the Subsystem is instantiated and lives for the whole match. Commands use the Subsystem's public methods — they never touch hardware directly."
+/>
+
+<Quiz
+  client:load
+  question="Two commands both call addRequirements(armSubsystem). What happens if they run at the same time?"
+  options={[
+    "Both run simultaneously — the outputs add together",
+    "The program throws an exception and crashes",
+    "The scheduler cancels the lower-priority command before starting the new one",
+    "The second command is silently ignored",
+  ]}
+  correct={2}
+  explanation="The WPILib scheduler enforces exclusive ownership. When a new command requires an already-owned subsystem, it interrupts and cancels the current command, then starts the new one."
+/>
+
+## Key takeaways
+
+- `Robot.java` is the entry point. It creates `RobotContainer` and keeps the scheduler running.
+- `RobotContainer` wires Subsystems to Commands and Commands to buttons.
+- Subsystems own hardware. Commands describe actions using Subsystem methods.
+- `addRequirements()` prevents two Commands from controlling the same hardware simultaneously.
+- Hardware objects (motors, sensors) belong in Subsystems — never in Commands or `Robot.java`.
+
+## Common confusions
+
+**"My subsystem's periodic() isn't running."** Subsystem `periodic()` only runs if the Subsystem is registered with the scheduler. `SubsystemBase` does this automatically in its constructor — make sure you're extending `SubsystemBase`, not just `Object`.
+
+**"I have duplicate motor behavior — it's being driven from two places."** You probably have a default command on the subsystem AND another command running. Check `CommandScheduler.getInstance().printWatchdogEpochs()` in the logs — it shows what's running each tick.
+
+## What's next
+
+In **Robot Code Lesson 02**, we'll go deeper into Subsystems — how to structure one cleanly, what belongs in `periodic()`, and how to expose the right interface for your Commands.

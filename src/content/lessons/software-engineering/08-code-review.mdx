@@ -1,0 +1,407 @@
+---
+track: software-engineering
+lesson: 8
+title: Code Review
+prereqs: [software-engineering-07]
+objectives:
+  - Explain why code review is a safety practice, not just a quality practice, for FRC robots
+  - Identify at least five specific issues to look for when reviewing robot code (off-by-ones, null safety, hardcoded constants, missing motor safety, incomplete state machines)
+  - Give constructive, actionable code review feedback using the suggest-don't-demand approach
+  - Complete a self-review checklist before requesting review from teammates
+---
+
+import Key from '../../../components/Key.astro';
+import Try from '../../../components/Try.astro';
+import Note from '../../../components/Note.astro';
+import Warn from '../../../components/Warn.astro';
+import Quiz from '../../../components/demos/Quiz.jsx';
+import CodeEditor from '../../../components/demos/CodeEditor.jsx';
+
+## Hook
+
+Two weeks before competition. A teammate adds a new autonomous routine overnight and merges it directly to `main` without anyone else looking at it. Everything seems fine.
+
+During the first match, the robot drives forward at full speed and doesn't stop. It hits the scoring table. The problem: the `isFinished()` method checked the encoder in the wrong direction — `error > 0` instead of `Math.abs(error) < tolerance`. The robot would have driven to the wall forever.
+
+One person with fresh eyes, five minutes before merge, would have caught this instantly. That's code review. On a robot that moves at 15 feet per second and weighs 120 pounds, it's not optional.
+
+## Core concept
+
+<Key>
+Code review is a systematic inspection of code changes before they are merged. For FRC robots, it serves two purposes: quality (catching logic errors, duplicate code, bad patterns) and safety (catching motor runaway conditions, missing limits, incomplete state machines that could damage hardware or people). A short self-review checklist before asking for review makes both faster.
+</Key>
+
+## Why code review matters for FRC
+
+Code review on a software project catches bugs. On a robot project, it also prevents:
+
+- **Hardware damage.** An arm command without a `end()` stop call will keep the motor running when interrupted. A missing encoder limit lets the mechanism drive past its physical range.
+- **Safety hazards.** A pneumatic system that never reaches its OFF state leaves a cylinder pressurized. A shooter that spins up during disabled mode is a projectile risk.
+- **Match failures.** An off-by-one in a waypoint array causes the robot to drive to the wrong position in auto. A hardcoded port number (5 instead of 6) means the robot at competition can't find its sensor.
+- **Technical debt.** Duplicate logic in three commands means fixing a bug requires three separate edits. Review is the moment to catch it early.
+
+Even experienced programmers miss things in their own code — the author's brain fills in what it expects to see, not what's actually there. A reviewer's fresh eyes catch what the author's brain autocompleted.
+
+## The self-review checklist
+
+Before asking anyone else to review your code, go through this yourself:
+
+**Logic**
+- [ ] Does every command's `isFinished()` actually return `true` at the right time?
+- [ ] Does every command's `end(interrupted)` stop all motors and actuators?
+- [ ] Are all state machine transitions complete? Can the system get stuck in a state with no exit?
+- [ ] Are loop bounds correct? Is it `< array.length` or `<= array.length`?
+
+**Safety**
+- [ ] Does every motor have a nominal soft limit or a clamped output range?
+- [ ] Are there null checks where objects might not be initialized?
+- [ ] Does the robot behave safely if a sensor returns a bad value (0, NaN, Integer.MAX_VALUE)?
+- [ ] Is the robot safe to enable immediately after deploying, or does it require a specific startup sequence?
+
+**Constants and configuration**
+- [ ] Are all hardware IDs (CAN IDs, DIO ports) defined in a `Constants.java`, not scattered as magic numbers?
+- [ ] Are physical limits (max angle, max speed) defined as named constants, not inline numbers?
+
+**Code quality**
+- [ ] Is there duplicate logic that could be extracted into a method?
+- [ ] Are variable and method names descriptive enough that someone unfamiliar with the mechanism understands them?
+- [ ] Is the code consistent with the rest of the codebase (same patterns, same naming conventions)?
+
+**Testing**
+- [ ] Has this been tested on the robot (or simulator), not just compiled?
+- [ ] Are there unit tests for any non-trivial logic?
+
+## What to look for: robot-specific issues
+
+### 1. Missing motor stop in end()
+
+```java
+// WRONG — motor keeps running at its last execute() speed when interrupted
+@Override
+public void end(boolean interrupted) {
+    // empty — forgot to stop
+}
+
+// RIGHT
+@Override
+public void end(boolean interrupted) {
+    arm.setTargetAngle(arm.getAngleDegrees()); // hold in place
+    // or: arm.stopMotor();
+}
+```
+
+Review question: *"If this command is interrupted at any point during execute(), does the mechanism stop safely?"*
+
+### 2. isFinished() that's always false or always true
+
+```java
+// BUG — always false, command never ends
+@Override
+public boolean isFinished() {
+    return Math.abs(target - arm.getAngle()) < tolerance;
+    // If getAngle() returns degrees but target is in radians, this never
+    // returns true unless you're very lucky
+}
+```
+
+Review question: *"What are the units? Can I trace the data from sensor to comparison without a unit mismatch?"*
+
+### 3. Hardcoded constants
+
+```java
+// WRONG — which port is 5? What does 0.8 mean?
+private final CANSparkMax motor = new CANSparkMax(5, MotorType.kBrushless);
+motor.set(0.8);
+
+// RIGHT
+private final CANSparkMax motor = new CANSparkMax(Constants.Arm.MOTOR_CAN_ID, MotorType.kBrushless);
+motor.set(Constants.Arm.INTAKE_SPEED);
+```
+
+Review question: *"If this robot were rebuilt with different CAN IDs, how many files would need to change?"*
+
+### 4. Incomplete state machine
+
+```java
+// This state machine has no way out of EJECTING if the sensor never clears
+switch (state) {
+    case EMPTY:
+        if (buttonPressed) state = INTAKING;
+        break;
+    case INTAKING:
+        if (sensorTripped) state = HOLDING;
+        break;
+    case HOLDING:
+        if (shootPressed) state = EJECTING;
+        break;
+    case EJECTING:
+        motor.set(-1.0);
+        if (sensorCleared) state = EMPTY;
+        // What if sensorCleared never becomes true? Motor runs forever.
+        break;
+}
+```
+
+Review question: *"For each state, what are all possible exits? Is there a stuck-forever path?"*
+
+### 5. Off-by-one in waypoint arrays
+
+```java
+// BUG — last waypoint is skipped
+for (int i = 0; i < waypoints.length - 1; i++) {
+    // should be i < waypoints.length
+}
+
+// BUG — ArrayIndexOutOfBoundsException
+for (int i = 0; i <= waypoints.length; i++) {
+    // should be i < waypoints.length
+}
+```
+
+Review question: *"Step through the loop at i=0 and i=length-1. Does the body execute correctly at both?"*
+
+### 6. Missing null check
+
+```java
+// BUG — autoCommand can be null if chooser has no selection
+Command autoCommand = autoChooser.getSelected();
+autoCommand.schedule();  // NullPointerException if nothing is selected
+
+// RIGHT
+Command autoCommand = autoChooser.getSelected();
+if (autoCommand != null) {
+    autoCommand.schedule();
+} else {
+    DriverStation.reportWarning("No auto selected!", false);
+}
+```
+
+Review question: *"What values can this variable hold? Is null one of them?"*
+
+## How to give constructive feedback
+
+The goal of review feedback is to improve the code, not demonstrate that you're smarter than the author. Every comment should be actionable.
+
+**Structure good comments as: observation + reasoning + suggestion.**
+
+| What you see | How NOT to say it | How to say it |
+|---|---|---|
+| Magic number | "This is wrong" | "Consider extracting 0.8 into `Constants.Arm.INTAKE_SPEED` — if we change the intake speed later, there's only one place to update." |
+| Missing end() stop | "You forgot something obvious" | "If this command is interrupted (e.g., by an emergency stop), the motor will keep running at the last execute() output. Adding `arm.stopMotor()` in `end()` would fix this." |
+| Off-by-one | "Classic mistake" | "This loop runs from 0 to `length - 2` — the last waypoint is skipped. Changing `< waypoints.length - 1` to `< waypoints.length` should fix it." |
+
+### Types of review comments
+
+- **Must fix (blocking):** Safety issue or definite bug. The PR should not merge until this is resolved.
+- **Should fix (non-blocking):** Code quality issue that's worth addressing but won't cause a match failure.
+- **Consider (suggestion):** A refactoring or pattern improvement for the author to evaluate — not required, but worth thinking about.
+
+Label your comments so the author knows how urgent each item is.
+
+## Using GitHub pull requests
+
+Pull requests (PRs) are the standard way to request review before merging. The workflow:
+
+```bash
+# Push your feature branch
+git push origin feature/hood-tuning
+
+# Create a PR on GitHub: feature/hood-tuning → dev
+# Title: "Add hood angle lookup table"
+# Description: what changed and why, what was tested
+```
+
+A good PR description answers:
+1. **What changed?** (subsystem, command, configuration)
+2. **Why?** (what problem does this solve, or what feature does it add?)
+3. **How was it tested?** (in sim, on the practice bot, on the competition bot?)
+4. **What should reviewers focus on?** (flag any areas you're uncertain about)
+
+On GitHub, reviewers leave comments on specific lines. The author responds and makes changes. When all blocking comments are resolved, the reviewer approves and the author merges.
+
+<Note>
+Branch protection rules on GitHub can require at least one reviewer to approve before a branch can be merged to `main`. For FRC teams, requiring one approval on `main` is a lightweight safety net that catches the most dangerous changes.
+</Note>
+
+## Reviewing robot code specifically
+
+A robot code review has a few extra checks beyond normal software:
+
+**Check every Command:**
+- Is `addRequirements()` called with all subsystems the command touches?
+- Does `end(interrupted)` leave the mechanism in a safe state?
+- Does `isFinished()` have a valid termination condition, or can it loop forever?
+
+**Check every Subsystem:**
+- Are hardware limits (min/max) enforced in the subsystem, not scattered in commands?
+- Are CAN IDs and port numbers coming from `Constants`, not inline?
+- Does `periodic()` only do telemetry, or is there control logic hiding there?
+
+**Check bindings:**
+- Is the right trigger method used (`onTrue` vs `whileTrue`)?
+- Is there a default command set for each subsystem that needs one?
+- Is there an emergency stop binding?
+
+**Check autonomous:**
+- Does the auto command complete (all `isFinished()` methods return true eventually)?
+- Are there timeouts on any commands that might not finish (`.withTimeout()`)?
+- Does the auto assume a specific robot starting position that may not be reproducible?
+
+## Key takeaways
+
+- Code review is a safety practice for FRC robots, not just quality control. A 120-lb robot moving at speed can cause real damage if control logic is wrong.
+- Self-review with a checklist before requesting peer review makes the review faster and more productive.
+- Key things to look for: missing `end()` stops, `isFinished()` that never returns true, hardcoded constants, incomplete state machines, off-by-ones, missing null checks.
+- Feedback should be: specific, actionable, and reasoning-backed — not just "this is wrong."
+- Label comments as blocking (must fix) or non-blocking (should fix / consider).
+- GitHub PR descriptions should answer: what, why, how tested, what to focus on.
+
+## Common confusions
+
+**"Code review slows us down during build season."** A ten-minute review catches a two-hour debugging session. The tradeoff is heavily in favor of review. Keep PRs small (one feature or fix at a time) to keep individual reviews fast.
+
+**"Nobody on my team knows enough to review my code."** Even a less experienced teammate can check constants, variable names, and whether `end()` stops motors. Reviewing is also how junior members learn — it's not wasted time.
+
+**"The review found problems but we're out of time — can we just merge?"** For non-safety issues, yes. For missing motor stops or potential runaway conditions, no. Set a rule: safety issues are always blocking.
+
+**"I gave feedback and they ignored it."** Distinguish between blocking and non-blocking comments. If you labeled something as "must fix" and it wasn't addressed, the PR shouldn't be merged. If it's a "consider," accept that the author has context you may not.
+
+## Challenge
+
+<Try>
+Review this subsystem code and find as many issues as possible. For each one, write a comment in the format: "Issue: [what] — Risk: [what could go wrong] — Fix: [what to change]."
+
+```java
+public class ShooterSubsystem extends SubsystemBase {
+    private final CANSparkMax motor1 = new CANSparkMax(7, MotorType.kBrushless);
+    private final CANSparkMax motor2 = new CANSparkMax(8, MotorType.kBrushless);
+    private double targetRPM = 0;
+
+    public void setRPM(double rpm) {
+        targetRPM = rpm;
+        motor1.set(rpm / 5000.0);
+        motor2.set(rpm / 5000.0);
+    }
+
+    public boolean atSetpoint() {
+        return motor1.getEncoder().getVelocity() == targetRPM;
+    }
+
+    public void stop() {
+        motor1.set(0);
+    }
+
+    @Override
+    public void periodic() {
+        SmartDashboard.putNumber("rpm", motor1.getEncoder().getVelocity());
+    }
+}
+```
+
+Hint: there are at least five distinct issues.
+</Try>
+
+<CodeEditor
+  client:load
+  starterCode={`// Find the bugs in this ShooterCommand.
+// The command is supposed to spin up to targetRPM and hold until interrupted.
+// Print each bug you find as: "BUG [n]: description"
+
+public class BugHuntDemo {
+
+    // Simulated shooter that just stores values
+    static class FakeShooter {
+        double motorOutput = 0.0;
+        double currentRPM = 0.0;
+        double targetRPM = 0.0;
+        boolean initialized = false;
+
+        void setMotorOutput(double output) {
+            motorOutput = Math.max(-1.0, Math.min(1.0, output));
+        }
+
+        void stopMotor() {
+            motorOutput = 0.0;
+        }
+
+        boolean atSetpoint() {
+            // Uses floating point equality — BUGGY in real code, fine for sim
+            return Math.abs(currentRPM - targetRPM) < 50;
+        }
+    }
+
+    static class ShooterCommand {
+        FakeShooter shooter;
+        double targetRPM;
+        int ticksRun = 0;
+
+        ShooterCommand(FakeShooter shooter, double targetRPM) {
+            this.shooter = shooter;
+            this.targetRPM = targetRPM;
+        }
+
+        void initialize() {
+            // BUG 1: does NOT reset or record targetRPM anywhere
+            // No initialization at all
+        }
+
+        void execute() {
+            // BUG 2: output not clamped — if targetRPM > 5000, output > 1.0
+            shooter.setMotorOutput(targetRPM / 5000.0);
+            ticksRun++;
+        }
+
+        boolean isFinished() {
+            // BUG 3: this command is designed to run until interrupted,
+            // but it returns true after 5 ticks — it will self-terminate
+            return ticksRun >= 5;
+        }
+
+        void end(boolean interrupted) {
+            // BUG 4: does NOT stop the motor on end
+            // Motor keeps spinning after command ends
+        }
+    }
+
+    public static void main(String[] args) {
+        FakeShooter shooter = new FakeShooter();
+        ShooterCommand cmd = new ShooterCommand(shooter, 4500.0);
+
+        cmd.initialize();
+
+        // Simulate 6 ticks
+        for (int i = 0; i < 6; i++) {
+            if (!cmd.isFinished()) {
+                cmd.execute();
+            }
+        }
+        cmd.end(true);
+
+        // TODO: Inspect the results and print any bugs you can confirm:
+        // - Was the motor stopped after end()?
+        // - Did the command finish too early?
+        // - Was the output in range?
+        System.out.println("Motor output after end(): " + shooter.motorOutput);
+        System.out.println("Ticks run before finish:  " + cmd.ticksRun);
+        System.out.println("Output for 6000 RPM target: " + (6000.0 / 5000.0));
+
+        // Print confirmed bugs
+        if (shooter.motorOutput != 0.0) {
+            System.out.println("BUG 1: Motor not stopped in end() — output is " + shooter.motorOutput);
+        }
+        // TODO: add checks for the other bugs
+    }
+}`}
+  testCases={[
+    { label: "Motor not stopped after end()", expected: "BUG 1: Motor not stopped in end() — output is 0.90" },
+    { label: "Command finishes after 5 ticks (too early)", expected: "Ticks run before finish:  5" },
+    { label: "Output > 1.0 for RPM > 5000", expected: "Output for 6000 RPM target: 1.2" },
+  ]}
+  hint="After the main loop, shooter.motorOutput should be 0.0 (it's not — BUG 1). cmd.ticksRun should be 5 (command ended too early — BUG 2). Print 6000.0/5000.0 to show the unclamped output exceeds 1.0 (BUG 3). Add: if (cmd.ticksRun == 5) System.out.println('BUG 2: command self-terminates after 5 ticks')."
+/>
+
+## What's next
+
+You've completed the Software Engineering track. From command-based architecture to I/O abstraction, command composition, reactive triggers, testing, logging, version control, and code review — these are the practices that separate a team that survives competition from one that thrives in it.
+
+The next step is applying them: pick a subsystem your team is building this season and refactor it to use the I/O pattern from Lesson 02. Add unit tests. Set up the branching strategy from Lesson 07. Require code review before any merge to `main`. These habits compound over a build season into a robot that's reliable, debuggable, and maintainable when it matters most.

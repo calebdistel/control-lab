@@ -1,0 +1,177 @@
+---
+track: fundamentals
+lesson: 1
+title: What is a program?
+prereqs: []
+objectives:
+  - Describe a program as a precise sequence of instructions
+  - Trace a short program by hand and predict its output
+  - Explain why "obvious" instructions still need to be made explicit
+---
+
+import Key from '../../../components/Key.astro';
+import Try from '../../../components/Try.astro';
+import Warn from '../../../components/Warn.astro';
+import CodeTrace from '../../../components/demos/CodeTrace.jsx';
+import Quiz from '../../../components/demos/Quiz.jsx';
+import CodeEditor from '../../../components/demos/CodeEditor.jsx';
+
+## Hook
+
+Your first robot task: move an arm from 0° to 90° and hold it there.
+
+You write what seems obvious:
+
+```java
+void periodic() {
+    arm.moveToAngle(90);
+}
+```
+
+The robot doesn't move. There is no `moveToAngle` method — the arm doesn't know what that means. It only knows "set motor power to this number." You can't tell the robot *what* to accomplish. You have to tell it exactly *how*, step by step.
+
+## Core concept
+
+<Key>
+A program is a sequence of instructions, executed in order, by something that does exactly what you say — no more, no less.
+</Key>
+
+That last part is the trap. A computer will do precisely what your program tells it to. If your program is wrong in a subtle way, the robot will be subtly wrong, confidently, fifty times a second.
+
+## Walk-through
+
+The task: move an arm from 0° to 90°. The arm has a motor and an encoder (a sensor that measures the current angle).
+
+Instead of "move to 90°" (a goal), the program has to describe *exactly* what to do:
+
+1. Read the current angle from the encoder.
+2. If the angle is less than 88°, run the motor forward.
+3. If the angle is greater than 92°, run the motor backward.
+4. If the angle is between 88° and 92°, stop the motor.
+5. Go back to step 1.
+
+That's not five goals — it's five *actions the hardware can actually do*. The robot executes this loop fifty times per second. Each cycle it reads the sensor, makes a decision, and acts.
+
+## Interactive demo
+
+Here's those five steps as real Java code. The arm starts at 45°. Step through and watch what the program actually does:
+
+<CodeTrace
+  client:load
+  code={`void periodic() {
+    double angle = encoder.getAngle();
+    if (angle < 88) {
+        motor.set(0.5);
+    } else if (angle > 92) {
+        motor.set(-0.5);
+    } else {
+        motor.set(0.0);
+    }
+}`}
+  variables={{ call: 1, angle: 45, motor: 0 }}
+  steps={[
+    { line: 1, label: "periodic() is called — one loop cycle begins", state: { call: 1, angle: 45, motor: 0 } },
+    { line: 2, label: "Read encoder: angle = 45°", state: { call: 1, angle: 45, motor: 0 } },
+    { line: 3, label: "45 < 88 → true — we need to move forward", state: { call: 1, angle: 45, motor: 0 } },
+    { line: 4, label: "motor.set(0.5) — spin forward at half power", state: { call: 1, angle: 45, motor: 0.5 } },
+    { line: 9, label: "method returns — 20ms passes, arm moves slightly", state: { call: 2, angle: 51, motor: 0.5 } },
+    { line: 2, label: "Next call: angle = 51° — still short of 88°", state: { call: 2, angle: 51, motor: 0.5 } },
+    { line: 3, label: "51 < 88 → still true", state: { call: 2, angle: 51, motor: 0.5 } },
+    { line: 4, label: "motor.set(0.5) again — keeps running", state: { call: 2, angle: 51, motor: 0.5 } },
+    { line: 9, label: "...many cycles later, angle = 89°", state: { call: 3, angle: 89, motor: 0.5 } },
+    { line: 2, label: "Read encoder: angle = 89°", state: { call: 3, angle: 89, motor: 0.5 } },
+    { line: 3, label: "89 < 88 → false", state: { call: 3, angle: 89, motor: 0.5 } },
+    { line: 5, label: "89 > 92 → false", state: { call: 3, angle: 89, motor: 0.5 } },
+    { line: 8, label: "else: angle is in range — motor.set(0.0)", state: { call: 3, angle: 89, motor: 0.0 } },
+  ]}
+/>
+
+The program never says "go to 90°." It says: read the sensor, compare to a threshold, set a motor power. The robot reaches 90° as a *consequence* of running those four lines thousands of times.
+
+<Warn>
+Notice what happens if you remove the `else` branch: the motor never gets turned off. The arm would overshoot 90°, then the `angle > 92` check would kick in and drive it back — past 88°, triggering the forward motor again. The arm would oscillate forever. Every branch matters.
+</Warn>
+
+## Try it yourself
+
+<Try>
+Trace this program by hand. Write the value of `angle` after each step before you check.
+
+```java
+int angle = 0;
+angle = angle + 30;  // Step A
+angle = angle + 30;  // Step B
+angle = angle - 10;  // Step C
+angle = angle + 30;  // Step D
+```
+</Try>
+
+<CodeTrace
+  client:load
+  code={`int angle = 0;
+angle = angle + 30;
+angle = angle + 30;
+angle = angle - 10;
+angle = angle + 30;`}
+  variables={{ angle: 0 }}
+  steps={[
+    { line: 1, label: "angle = 0 — initialize", state: { angle: 0 } },
+    { line: 2, label: "angle = 0 + 30 = 30  (Step A)", state: { angle: 30 } },
+    { line: 3, label: "angle = 30 + 30 = 60  (Step B)", state: { angle: 60 } },
+    { line: 4, label: "angle = 60 − 10 = 50  (Step C)", state: { angle: 50 } },
+    { line: 5, label: "angle = 50 + 30 = 80  (Step D)", state: { angle: 80 } },
+  ]}
+/>
+
+<Quiz
+  client:load
+  question="What is the value of angle after Step D?"
+  type="number"
+  correct={80}
+  explanation="0 → +30 = 30 → +30 = 60 → −10 = 50 → +30 = 80. If you got 80, you just ran a program in your head. That's all a computer does — just faster."
+/>
+
+## Key takeaways
+
+- A program is a sequence of instructions, executed in order.
+- Computers do exactly what you say — including your mistakes.
+- Robot programs loop continuously, reading sensors and acting on what they find.
+- "Move to 90°" is a goal. "If angle < 88, run the motor forward" is a program.
+
+## Common confusions
+
+**"This seems too simple."** It is, on purpose. Programs don't get conceptually harder — they get *longer*. The skill you're building right now is being explicit, and it's easier to learn on something small.
+
+**"Won't the robot figure out what I mean?"** No. A robot has no common sense — only instructions. Every 498 senior has spent at least one late night debugging because they assumed the robot knew something it didn't.
+
+## Challenge
+
+<Try>
+A robot arm starts at 0°. Your program runs four moves in sequence. Write them as Java statements and print the final angle.
+
+Moves: add 45°, add 30°, subtract 20°, add 10°
+</Try>
+
+<CodeEditor
+  client:load
+  starterCode={`public class Main {
+    public static void main(String[] args) {
+        int angle = 0;
+
+        // Move 1: add 45
+        // Move 2: add 30
+        // Move 3: subtract 20
+        // Move 4: add 10
+
+        System.out.println(angle);
+    }
+}`}
+  testCases={[
+    { label: "Final angle after all four moves", expected: "65" },
+  ]}
+  hint="Each move is one line: angle = angle + 45; etc. Execute them in order, then print."
+/>
+
+## What's next
+
+In **Lesson 02**, we'll look at *state and memory* — how a program remembers values between loop cycles, and why where you declare a variable can quietly break everything.

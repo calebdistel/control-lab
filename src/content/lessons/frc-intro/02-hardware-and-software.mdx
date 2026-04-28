@@ -1,0 +1,116 @@
+---
+track: frc-intro
+lesson: 2
+title: Hardware and software
+prereqs: [frc-intro-01]
+objectives:
+  - Identify the roboRIO, motor controllers, and CAN bus on a robot diagram
+  - Trace the path from a Java method call to physical motor movement
+  - Explain what WPILib is and why it exists
+---
+
+import Key from '../../../components/Key.astro';
+import Note from '../../../components/Note.astro';
+import Warn from '../../../components/Warn.astro';
+
+## The hardware stack
+
+When you write `motor.set(0.5)` in Java, a chain of events happens across several physical components. Understanding that chain helps you debug when something doesn't move.
+
+Here's every component between your code and a turning shaft:
+
+### roboRIO — the robot's brain
+
+The roboRIO is a small computer that runs your Java program. It has:
+- A dual-core ARM processor running at 667 MHz
+- 256 MB of RAM
+- Built-in accelerometer and LEDs
+- USB, Ethernet, and a special connector called the **MXP** port for extra I/O
+
+Your code runs on the roboRIO. When you deploy from VS Code, you're copying compiled Java bytecode onto this device and restarting it.
+
+### Motor controllers — translating commands to voltage
+
+Motors need variable voltage to run at different speeds. The roboRIO can't supply that — it outputs digital signals. **Motor controllers** (also called speed controllers) sit between the roboRIO and the motors. They receive a command over **CAN bus** and output the correct voltage to the motor.
+
+The most common ones in FRC:
+- **SPARK MAX** (REV Robotics) — used with NEO brushless motors
+- **TalonFX** (CTRE) — used with Falcon 500 and Kraken motors
+
+When you write `motor.set(0.5)`, your code sends a message over CAN bus to the motor controller, which then outputs 50% voltage to the motor.
+
+### CAN bus — the robot's nervous system
+
+CAN (Controller Area Network) is a two-wire communication bus that lets devices talk to each other. Every motor controller, power distribution hub, and many sensors connect to the same two wires looped around the robot.
+
+Each device has a **CAN ID** — a unique number from 0 to 62. When you write `new CANSparkMax(5, MotorType.kBrushless)`, you're creating a software object that talks to the physical Spark MAX with CAN ID 5.
+
+<Key>
+Your code doesn't directly touch hardware. It sends messages over CAN bus to motor controllers and reads back data from sensors — all through software objects provided by WPILib and vendor libraries.
+</Key>
+
+### Encoders — knowing where you are
+
+Motors just spin. To know *how far* something has moved, you need an encoder — a sensor that counts rotations. Most modern FRC motors have encoders built in.
+
+The encoder reports:
+- **Position** — how many rotations since reset (you convert to degrees, meters, etc.)
+- **Velocity** — rotations per second (you convert to meters/second, RPM, etc.)
+
+When you write `encoder.getPosition()`, you're reading a value the motor controller sampled from the encoder at the end of the last loop cycle.
+
+### Driver Station — connecting to drivers
+
+The roboRIO connects to a laptop running **FRC Driver Station** software. This software:
+- Enables/disables the robot (no enable signal → no motors move, period)
+- Passes joystick data to your robot code over WiFi (or tether cable during pit testing)
+- Shows voltage, connection status, and match timers
+
+If your robot isn't moving and everything looks right in code, always check: is Driver Station enabled? Is the robot in the right mode?
+
+## The full path from code to motion
+
+```
+Your Java code
+      ↓   (method call)
+WPILib / vendor library object (CANSparkMax, TalonFX, etc.)
+      ↓   (CAN message, every 20ms)
+Motor controller (SPARK MAX, TalonFX)
+      ↓   (PWM voltage output)
+Motor (NEO, Falcon, Kraken, CIM...)
+      ↓   (mechanical power)
+Gearbox → mechanism shaft → arm/wheel/intake
+```
+
+Every step in that chain can fail silently if something is misconfigured. If a motor doesn't move, walk this chain: Is the CAN ID correct? Is the motor controller powered? Is the robot enabled in Driver Station?
+
+## What is WPILib?
+
+WPILib is the official Java library for FRC. It provides:
+- Classes for every type of sensor and actuator (`CANSparkMax`, `DigitalInput`, `Solenoid`, etc.)
+- The `TimedRobot` base class whose `periodic()` methods run your code every 20ms
+- The **Command-Based** framework for organizing robot behavior
+- Utilities for math, geometry, path planning, logging, and simulation
+
+Without WPILib, you'd have to write raw CAN frames and OS-level I/O calls. With it, controlling a motor is two lines:
+
+```java
+CANSparkMax motor = new CANSparkMax(5, MotorType.kBrushless);
+motor.set(0.5);
+```
+
+<Note>
+Vendor libraries (REVLib for SPARK MAX, CTRE Phoenix for TalonFX/Pigeon) extend WPILib. They provide the specific classes for their hardware. Your robot project will have both WPILib and whatever vendor libraries match your hardware.
+</Note>
+
+## The 20ms loop
+
+The roboRIO calls your `periodic()` methods every 20 milliseconds — 50 times per second. This is the heartbeat of your robot program. Every sensor read, every control calculation, every motor command happens inside these calls.
+
+<Warn>
+Never put `Thread.sleep()` or any blocking call inside `periodic()`. If your code takes longer than 20ms to run, the scheduler overruns — the robot becomes sluggish or unresponsive. Keep periodic() fast.
+</Warn>
+
+## What's next
+
+Now that you know what's physically happening when code runs, head to **Fundamentals** and learn how to write that code. Start with **Lesson 01: What is a program?** — which is exactly the question you're now equipped to answer from the hardware side.

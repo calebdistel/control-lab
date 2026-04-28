@@ -1,0 +1,213 @@
+---
+track: fundamentals
+lesson: 2
+title: State and memory
+prereqs: [fundamentals-01]
+objectives:
+  - Explain the difference between local and persistent state
+  - Predict a variable's value after multiple loop iterations
+  - Decide where to declare a variable based on how long it needs to survive
+---
+
+import Key from '../../../components/Key.astro';
+import Try from '../../../components/Try.astro';
+import Note from '../../../components/Note.astro';
+import Warn from '../../../components/Warn.astro';
+import CodeTrace from '../../../components/demos/CodeTrace.jsx';
+import Quiz from '../../../components/demos/Quiz.jsx';
+import CodeEditor from '../../../components/demos/CodeEditor.jsx';
+
+## Hook
+
+You write code to count how many game pieces the robot has collected. You test it — the robot grabs ten pieces. Every log line says `Collected: 1`. It never gets past 1.
+
+You check the code. It looks completely reasonable:
+
+```java
+void periodic() {
+    int count = 0;
+    if (sensor.hasGamePiece()) {
+        count = count + 1;
+        System.out.println("Collected: " + count);
+    }
+}
+```
+
+`periodic()` runs 50 times per second. Every call recreates `count` from scratch. By the time you print it, it's been alive for roughly 0.02 milliseconds.
+
+## Core concept
+
+<Key>
+Where you declare a variable determines how long it lives. A variable declared inside a method is destroyed when the method returns. A variable declared as a class field persists for the life of the object.
+</Key>
+
+## See the problem
+
+Step through this buggy version. Watch what happens to `count` across two consecutive calls to `periodic()`:
+
+<CodeTrace
+  client:load
+  code={`void periodic() {
+    int count = 0;
+    if (sensor.hasGamePiece()) {
+        count = count + 1;
+        System.out.println(count);
+    }
+}`}
+  variables={{ call: 1 }}
+  steps={[
+    { line: 1, label: "periodic() is called — call #1 begins", state: { call: 1 } },
+    { line: 2, label: "int count = 0 — brand new variable, created this call", state: { call: 1, count: 0 } },
+    { line: 3, label: "sensor.hasGamePiece() → true", state: { call: 1, count: 0 } },
+    { line: 4, label: "count = count + 1 → count is now 1", state: { call: 1, count: 1 } },
+    { line: 5, label: "System.out.println(count) — prints 1", state: { call: 1, count: 1 }, console: "1" },
+    { line: 7, label: "method returns — count is destroyed", state: { call: 1, count: null }, comment: "count ceases to exist" },
+    { line: 1, label: "periodic() is called again — call #2 begins", state: { call: 2 } },
+    { line: 2, label: "int count = 0 — a completely new variable, back to zero", state: { call: 2, count: 0 }, comment: "memory of call #1 is gone" },
+    { line: 3, label: "sensor.hasGamePiece() → true again", state: { call: 2, count: 0 } },
+    { line: 4, label: "count = count + 1 → still just 1", state: { call: 2, count: 1 } },
+    { line: 5, label: "System.out.println(count) — still prints 1", state: { call: 2, count: 1 }, console: "1", comment: "stuck at 1 forever" },
+  ]}
+/>
+
+The method returns, `count` is destroyed, and on the next call we start from zero again. The robot counts to 1 fifty times per second.
+
+## The fix
+
+Move `count` outside `periodic()` — make it a field on the class. It gets created once at startup and survives every call:
+
+<CodeTrace
+  client:load
+  code={`int count = 0;  // field — lives on the object
+
+void periodic() {
+    if (sensor.hasGamePiece()) {
+        count = count + 1;
+        System.out.println(count);
+    }
+}`}
+  variables={{ call: 1, count: 0 }}
+  steps={[
+    { line: 1, label: "count = 0 — declared once at startup, lives on the object", state: { call: 1, count: 0 }, comment: "runs once, not per call" },
+    { line: 3, label: "periodic() called — call #1", state: { call: 1, count: 0 } },
+    { line: 4, label: "sensor.hasGamePiece() → true", state: { call: 1, count: 0 } },
+    { line: 5, label: "count = count + 1 → count is now 1", state: { call: 1, count: 1 } },
+    { line: 6, label: "System.out.println(count) — prints 1", state: { call: 1, count: 1 }, console: "1" },
+    { line: 7, label: "method returns — count field survives as 1", state: { call: 2, count: 1 }, comment: "count lives on" },
+    { line: 3, label: "periodic() called — call #2", state: { call: 2, count: 1 } },
+    { line: 4, label: "sensor.hasGamePiece() → true again", state: { call: 2, count: 1 } },
+    { line: 5, label: "count = count + 1 → count is now 2", state: { call: 2, count: 2 } },
+    { line: 6, label: "System.out.println(count) — prints 2", state: { call: 2, count: 2 }, console: "2", comment: "accumulates correctly" },
+  ]}
+/>
+
+The only change: `int count = 0` moved from inside `periodic()` to the class body. Same syntax, completely different lifetime.
+
+## Where to put things
+
+Every variable you write, ask: *how long does this value need to live?*
+
+| Situation | Declare as |
+|-----------|------------|
+| Only needed inside this one call | Local variable (inside the method) |
+| Needs to survive between calls to `periodic()` | Class field |
+| Needs to be shared across multiple subsystems | Passed as a parameter, or stored in a shared class |
+
+<Note>
+In WPILib, your Subsystem class is created once at startup by `RobotContainer`. Fields on a Subsystem live for the entire match. Almost all robot state — positions, counts, modes, setpoints — belongs there.
+</Note>
+
+<Warn>
+`static` fields are shared across every instance of a class. For FRC subsystems, you almost never want this — it means two instances would share one counter. Use instance fields unless you have a specific reason not to.
+</Warn>
+
+## Try it yourself
+
+<Try>
+A subsystem has a field `speed = 0.5` and a local variable `boost`. Trace three consecutive calls to `periodic()`, each with `turboHeld = true`. What is `speed` after the third call?
+
+```java
+double speed = 0.5;  // field
+
+void periodic() {
+    double boost = 0.0;
+    if (turboHeld) boost = boost + 0.2;
+    speed = speed + boost;
+}
+```
+</Try>
+
+<CodeTrace
+  client:load
+  code={`double speed = 0.5;  // field
+
+void periodic() {
+    double boost = 0.0;
+    if (turboHeld) boost = boost + 0.2;
+    speed = speed + boost;
+}`}
+  variables={{ call: 1, speed: 0.5 }}
+  steps={[
+    { line: 4, label: "boost = 0.0 — local variable created fresh every call", state: { call: 1, speed: 0.5, boost: 0.0 } },
+    { line: 5, label: "turboHeld is true → boost = 0.0 + 0.2 = 0.2", state: { call: 1, speed: 0.5, boost: 0.2 } },
+    { line: 6, label: "speed = 0.5 + 0.2 = 0.7", state: { call: 1, speed: 0.7, boost: 0.2 } },
+    { line: 4, label: "Call #2 — boost resets again", state: { call: 2, speed: 0.7, boost: 0.0 } },
+    { line: 5, label: "turboHeld is true → boost = 0.2 again", state: { call: 2, speed: 0.7, boost: 0.2 } },
+    { line: 6, label: "speed = 0.7 + 0.2 = 0.9", state: { call: 2, speed: 0.9, boost: 0.2 } },
+    { line: 4, label: "Call #3 — boost resets again", state: { call: 3, speed: 0.9, boost: 0.0 } },
+    { line: 5, label: "turboHeld is true → boost = 0.2 again", state: { call: 3, speed: 0.9, boost: 0.2 } },
+    { line: 6, label: "speed = 0.9 + 0.2 = 1.1", state: { call: 3, speed: 1.1, boost: 0.2 } },
+  ]}
+/>
+
+<Quiz
+  client:load
+  question="After 3 calls with turboHeld = true, what is speed?"
+  type="number"
+  correct={1.1}
+  explanation="boost resets to 0.0 each call, then gets +0.2 — so it's always 0.2. speed accumulates: 0.5 → 0.7 → 0.9 → 1.1."
+/>
+
+## Key takeaways
+
+- Local variables are created when a method is called and destroyed when it returns. They don't remember anything.
+- Class fields persist for the life of the object — across every call to `periodic()`.
+- Most robot state (positions, counts, modes, setpoints) should be fields.
+- Before declaring a variable, ask: does this value need to outlive this function call?
+
+## Common confusions
+
+**"Why not just make everything a field?"** Local variables communicate intent — "this value only matters right now." Overusing fields makes it harder to understand what the robot is remembering and when. Use local variables for intermediate calculations you don't need to keep.
+
+**"My field resets when I redeploy."** Redeploying reboots the JVM — all fields reset to their initial values. If you need something to survive a reboot, you'd have to write it to disk or read it from a sensor. In FRC this is rare; most state should reset on startup anyway.
+
+## Challenge
+
+<Try>
+A counter field starts at 0. Simulate four calls to a `periodic()` method that increments it by 1 each call and prints the new value. Your output should be four lines: 1, 2, 3, 4.
+</Try>
+
+<CodeEditor
+  client:load
+  starterCode={`public class Main {
+    // Field: persists across all calls
+    static int count = 0;
+
+    static void periodic() {
+        count = count + 1;
+        System.out.println(count);
+    }
+
+    public static void main(String[] args) {
+        // Call periodic four times
+    }
+}`}
+  testCases={[
+    { label: "Four periodic calls print 1 through 4", expected: "1\n2\n3\n4" },
+  ]}
+  hint="Just call periodic() four times in main. The field count keeps its value between calls."
+/>
+
+## What's next
+
+In **Lesson 03**, we'll look at conditionals — the if/else structures that let a program choose different behavior based on sensor values.

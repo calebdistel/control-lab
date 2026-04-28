@@ -1,0 +1,36 @@
+---
+interface Props { label?: string; }
+const { label = 'Try it yourself' } = Astro.props;
+---
+<div class="callout callout-try">
+  <span class="callout-label">⚡ {label}</span>
+  <div class="callout-body"><slot /></div>
+</div>
+
+<style>
+.callout-try {
+  border: 1px solid #5a4a1e;
+  background: rgba(90,74,30,0.18);
+  border-radius: var(--r);
+  padding: 1rem 1.25rem;
+  margin: 1.75rem 0;
+}
+.callout-label {
+  display: block;
+  font-family: "Audiowide", "Kanit", sans-serif;
+  font-size: 0.65rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #f0c060;
+  margin-bottom: 0.6rem;
+}
+.callout-body :global(*) { color: #e8d8a0; }
+.callout-body :global(p) { margin: 0; line-height: 1.7; }
+.callout-body :global(p + p) { margin-top: 0.65rem; }
+.callout-body :global(code) {
+  background: rgba(255,255,255,0.08);
+  border-radius: 4px;
+  padding: 0.1em 0.4em;
+  font-size: 0.87em;
+}
+</style>

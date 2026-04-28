@@ -1,0 +1,73 @@
+---
+track: frc-intro
+lesson: 1
+title: What is FRC?
+prereqs: []
+objectives:
+  - Describe what FIRST Robotics Competition is and how a match works
+  - Explain the role of programming within a team's overall robot build
+  - Name the three major systems every FRC robot needs code to control
+---
+
+import Key from '../../../components/Key.astro';
+import Note from '../../../components/Note.astro';
+
+## What is FRC?
+
+FIRST Robotics Competition (FRC) is an international engineering challenge. Every January, FIRST releases a new game — think full-court basketball or capture-the-flag, but with 120-pound robots. Teams have six weeks to design, build, and program a robot that can compete in that game.
+
+Team 498 Cobras has competed since 2000. Every robot you'll see in the shop was designed, manufactured, and coded by students.
+
+## How a match works
+
+Each match puts six robots on the field — three on the **blue alliance**, three on the **red alliance**. A match has two phases:
+
+**Autonomous (first 15 seconds)** — your robot runs entirely on pre-programmed code with no driver input. It navigates the field, scores points, and positions itself using only sensors and the program you wrote.
+
+**Teleoperated (remaining 2 minutes 15 seconds)** — drivers control the robot using joysticks, but your code is still running. The driver input is just data coming in — your program decides what to do with it.
+
+<Key>
+During both autonomous and teleop, your code is running fifty times per second. Every motor move, every sensor check, every decision — it's all your program.
+</Key>
+
+## What programming actually controls
+
+Every FRC robot needs code for at least three things:
+
+**1. Drivetrain** — moving across the field. This ranges from a simple two-motor tank drive to a complex four-module swerve system that can move in any direction without rotating.
+
+**2. Mechanisms** — arms, intakes, shooters, climbers. Each has motors that need to be told when to run, how fast, and when to stop. They have sensors that measure position, force, or the presence of a game piece.
+
+**3. Autonomy** — the robot deciding where to go and what to do without driver input. In FRC this ranges from a simple "drive forward 2 meters" to following a pre-planned trajectory that scores multiple game pieces in 15 seconds.
+
+## The programming team's job
+
+The mechanical team builds the robot. The electrical team wires it. The programming team makes it move.
+
+That means:
+- Writing code to map joystick inputs to motor commands
+- Tuning control loops so mechanisms hit exact positions reliably
+- Writing autonomous routines that score points in the first 15 seconds
+- Debugging at 11pm the night before a competition when something stops working
+
+<Note>
+You don't need to know anything about robots or Java to start here. Every concept in this curriculum builds from zero — the only prerequisite is curiosity and willingness to trace through code step by step.
+</Note>
+
+## What this curriculum covers
+
+This curriculum teaches FRC programming from first principles. You'll start with what a program actually is (Lesson 01 of Fundamentals) and build toward the full control systems that make a competitive robot.
+
+The tracks are roughly ordered by when you'll need each topic on a real robot:
+
+1. **FRC Intro** — What you're looking at, what's connected to what
+2. **Fundamentals** — How programs work, variables, loops, logic, state
+3. **Robot Code** — WPILib, subsystems, command-based architecture
+4. **Motion & Control** — PID controllers for precise positioning
+5. **Sensing & Vision** — Cameras, AprilTags, knowing where you are on the field
+6. **Autonomy** — Planning and executing complex auto routines
+7. **Swerve Drive** — The dominant drivetrain in modern FRC
+
+## What's next
+
+In **Lesson 02**, we'll look at the actual hardware on an FRC robot — what components exist, how they communicate, and what your code is actually talking to when you call `motor.set(0.5)`.
