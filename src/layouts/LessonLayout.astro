@@ -13,14 +13,11 @@ const { lesson, allLessons, prev, next } = Astro.props;
 const { data } = lesson;
 
 const TRACKS = [
-  { id: 'frc-intro',      label: 'FRC Intro',         group: 'Getting Started' },
-  { id: 'fundamentals',   label: 'Fundamentals',       group: 'Core Concepts' },
-  { id: 'robot-code',     label: 'Robot Code',         group: 'Core Concepts' },
-  { id: 'motion-control', label: 'Motion & Control',  group: 'Control Theory' },
-  { id: 'sensing-vision', label: 'Sensing & Vision',  group: 'Control Theory' },
-  { id: 'autonomy',       label: 'Autonomy',          group: 'Advanced' },
-  { id: 'swerve',         label: 'Swerve Drive',      group: 'Advanced' },
-  { id: 'tooling',        label: 'Tooling',           group: 'Workflow' },
+  { id: 'frc-intro',            label: 'FRC Intro',           group: 'Getting Started' },
+  { id: 'fundamentals',         label: 'Fundamentals',         group: 'Core Concepts' },
+  { id: 'robot-code',           label: 'Robot Code',           group: 'Core Concepts' },
+  { id: 'control-systems',      label: 'Control Systems',      group: 'Advanced' },
+  { id: 'software-engineering', label: 'Software Engineering', group: 'Advanced' },
 ];
 
 function lessonUrl(l: CollectionEntry<'lessons'>) {
