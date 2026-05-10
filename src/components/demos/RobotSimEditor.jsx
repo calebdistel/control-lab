@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { EditorView, minimalSetup } from 'codemirror';
-import { EditorState, indentUnit } from '@codemirror/state';
+import { EditorState } from '@codemirror/state';
 import { keymap, lineNumbers, highlightActiveLineGutter, highlightActiveLine } from '@codemirror/view';
 import { defaultKeymap, historyKeymap, indentWithTab, history } from '@codemirror/commands';
-import { HighlightStyle, syntaxHighlighting, indentOnInput, bracketMatching } from '@codemirror/language';
+import { HighlightStyle, syntaxHighlighting, indentOnInput, bracketMatching, indentUnit } from '@codemirror/language';
 import { closeBrackets } from '@codemirror/autocomplete';
 import { java } from '@codemirror/lang-java';
 import { tags } from '@lezer/highlight';

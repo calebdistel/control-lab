@@ -18,6 +18,7 @@ import Warn from '../../../components/Warn.astro';
 import CodeTrace from '../../../components/demos/CodeTrace.jsx';
 import Quiz from '../../../components/demos/Quiz.jsx';
 import CodeEditor from '../../../components/demos/CodeEditor.jsx';
+import RobotSimEditor from '../../../components/demos/RobotSimEditor.jsx';
 
 ## Hook
 
@@ -299,6 +300,34 @@ Total at -200 RPM error = FF + kP * 200
   ]}
   correct={1}
   explanation="Slow recovery from disturbances is a proportional gain (kP) problem. The feedforward holds steady-state well, but when velocity drops suddenly, the PID error grows and kP * error needs to be large enough to produce meaningful corrective voltage quickly. Increase kP carefully — too high and it will oscillate."
+/>
+
+## Simulation: flywheel velocity controller
+
+<RobotSimEditor
+  client:load
+  type="flywheel"
+  starterCode={`public class ShooterController {
+    static double kS  = 0.10;   // V — static friction
+    static double kV  = 0.0020; // V / RPM — back-EMF
+    static double kP  = 0.003;  // V / RPM — PID correction
+    static double setpointRPM = 4500.0;
+
+    public static void periodic() {
+        double rpm   = getRPM();
+        double error = setpointRPM - rpm;
+
+        double ffVolts  = kS + kV * setpointRPM;
+        double pidVolts = kP * error;
+        double total    = ffVolts + pidVolts;
+
+        setVoltage(total);
+        SmartDashboard.putNumber("rpm",      rpm);
+        SmartDashboard.putNumber("setpoint", setpointRPM);
+        SmartDashboard.putNumber("voltage",  total);
+    }
+}`}
+  hint="Try adjusting kV first — if the flywheel settles below the setpoint, increase kV. Then adjust kP to control how fast it corrects after a disturbance. The kS constant handles static friction at low voltages."
 />
 
 ## What's next

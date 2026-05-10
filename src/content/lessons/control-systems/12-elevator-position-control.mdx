@@ -18,6 +18,7 @@ import Warn from '../../../components/Warn.astro';
 import CodeTrace from '../../../components/demos/CodeTrace.jsx';
 import Quiz from '../../../components/demos/Quiz.jsx';
 import CodeEditor from '../../../components/demos/CodeEditor.jsx';
+import RobotSimEditor from '../../../components/demos/RobotSimEditor.jsx';
 
 ## Hook
 
@@ -363,6 +364,34 @@ Formula: voltage = kS * sign(velocity) + kG + kV * velocity + kA * acceleration
   ]}
   correct={2}
   explanation="The CANSparkMax returns velocity in RPM (rotations per minute). The position conversion factor converts rotations to meters but does NOT divide by 60 to change 'per minute' to 'per second'. You must set a separate velocity conversion factor equal to ROT_TO_M / 60 to get meters per second."
+/>
+
+## Simulation: elevator position controller
+
+<RobotSimEditor
+  client:load
+  type="elevator"
+  starterCode={`public class ElevatorController {
+    // kG holds the elevator against gravity (constant, unlike arm)
+    static double kG  = 0.7;
+    static double kP  = 8.0;
+    static double setpointM = 1.0;
+
+    public static void periodic() {
+        double posM  = getPositionMeters();
+        double error = setpointM - posM;
+
+        double ffVolts  = kG;          // constant gravity hold
+        double pidVolts = kP * error;
+        double total    = ffVolts + pidVolts;
+
+        setVoltage(total);
+        SmartDashboard.putNumber("position", posM);
+        SmartDashboard.putNumber("setpoint", setpointM);
+        SmartDashboard.putNumber("voltage",  total);
+    }
+}`}
+  hint="Unlike the arm, gravity feedforward for an elevator is constant (kG doesn't change with height). Try setting kG=0 and observe how much harder PID has to work to hold position. Try setpointM=0.5 vs 1.2 to see the carriage move to different heights."
 />
 
 ## What's next

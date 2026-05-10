@@ -17,6 +17,7 @@ import Warn from '../../../components/Warn.astro';
 import CodeTrace from '../../../components/demos/CodeTrace.jsx';
 import Quiz from '../../../components/demos/Quiz.jsx';
 import CodeEditor from '../../../components/demos/CodeEditor.jsx';
+import RobotSimEditor from '../../../components/demos/RobotSimEditor.jsx';
 
 ## Hook
 
@@ -246,6 +247,30 @@ All three scenarios use the same setpoint of 90 degrees.
   ]}
   correct={0}
   explanation="At 3960 RPM: error = 4000 - 3960 = 40 RPM. Output = 0.005 * 40 = 0.2 (20%). The motor runs at 20% output — just enough to maintain 3960 RPM against friction. This is steady-state error: the system is stable but not at setpoint."
+/>
+
+## Simulation: tune a P-only arm controller
+
+<RobotSimEditor
+  client:load
+  type="arm"
+  starterCode={`public class ArmController {
+    // Try increasing kP to speed up response.
+    // Watch for oscillation when kP is too high.
+    static double kP = 0.05;
+    static double setpointDeg = 90.0;
+
+    public static void periodic() {
+        double angleDeg = getAngleDeg();
+        double error    = setpointDeg - angleDeg;
+        double voltage  = kP * error;
+        setVoltage(voltage);
+        SmartDashboard.putNumber("angle",    angleDeg);
+        SmartDashboard.putNumber("setpoint", setpointDeg);
+        SmartDashboard.putNumber("error",    error);
+    }
+}`}
+  hint="Notice the arm never quite reaches 90° — that gap is steady-state error caused by gravity. Try kP=0.05, 0.15, 0.5, 2.0 and observe the tradeoff: higher kP reduces steady-state error but eventually causes oscillation."
 />
 
 ## What's next

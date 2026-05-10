@@ -18,6 +18,7 @@ import Warn from '../../../components/Warn.astro';
 import CodeTrace from '../../../components/demos/CodeTrace.jsx';
 import Quiz from '../../../components/demos/Quiz.jsx';
 import CodeEditor from '../../../components/demos/CodeEditor.jsx';
+import RobotSimEditor from '../../../components/demos/RobotSimEditor.jsx';
 
 ## Hook
 
@@ -335,6 +336,34 @@ Formula: ff = kS * 0 + kG * cos(angle) + kV * 0
   ]}
   correct={1}
   explanation="Gravity FF = kG * cos(angle) = 0.6 * cos(60°) = 0.6 * 0.5 = 0.3 V. At 60° the arm is tilted so gravity has half the leverage it would at horizontal — hence only half the feedforward voltage is needed."
+/>
+
+## Simulation: arm position controller
+
+<RobotSimEditor
+  client:load
+  type="arm"
+  starterCode={`public class ArmController {
+    // Gravity feedforward: kG * cos(angle) compensates gravity
+    static double kG = 0.65;
+    static double kP = 3.5;
+    static double setpointDeg = 90.0;
+
+    public static void periodic() {
+        double deg = getAngleDeg();
+        double rad = deg * Math.PI / 180.0;
+
+        double error   = setpointDeg - deg;
+        double ffVolts = kG * Math.cos(rad);
+        double pidVolts = kP * error;
+
+        setVoltage(ffVolts + pidVolts);
+        SmartDashboard.putNumber("angle",    deg);
+        SmartDashboard.putNumber("setpoint", setpointDeg);
+        SmartDashboard.putNumber("ff",       ffVolts);
+    }
+}`}
+  hint="Try setting kG=0 and observe how the arm struggles to hold position — especially below horizontal where gravity is strongest. Restore kG=0.65 and notice how the feedforward handles gravity, leaving PID to only correct small errors."
 />
 
 ## What's next

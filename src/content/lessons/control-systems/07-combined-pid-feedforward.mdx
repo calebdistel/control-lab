@@ -17,6 +17,7 @@ import Warn from '../../../components/Warn.astro';
 import CodeTrace from '../../../components/demos/CodeTrace.jsx';
 import Quiz from '../../../components/demos/Quiz.jsx';
 import CodeEditor from '../../../components/demos/CodeEditor.jsx';
+import RobotSimEditor from '../../../components/demos/RobotSimEditor.jsx';
 
 ## Hook
 
@@ -332,6 +333,36 @@ PID formula for this exercise: pidOutput = kP * (setpoint - measurement) in Volt
   ]}
   correct={1}
   explanation="Feedforward only looks at the desired setpoint, not the actual measurement. When the setpoint is still 3500 RPM, the FF output is unchanged. The error (150 RPM) is entirely visible to the PID term, which increases its output to recover the lost speed. This is exactly the division of labor: FF handles steady-state requirements, PID handles disturbances."
+/>
+
+## Simulation: FF + PID flywheel controller
+
+<RobotSimEditor
+  client:load
+  type="flywheel"
+  starterCode={`public class FlywheelController {
+    // kS overcomes static friction; kV converts RPM to voltage
+    static double kS = 0.20;
+    static double kV = 0.00210;  // V / RPM
+    static double kP = 0.001;
+    static double setpointRPM = 3000.0;
+
+    public static void periodic() {
+        double rpm   = getRPM();
+        double error = setpointRPM - rpm;
+
+        double ffVolts  = kS + kV * setpointRPM;
+        double pidVolts = kP * error;
+        double total    = ffVolts + pidVolts;
+
+        setVoltage(total);
+        SmartDashboard.putNumber("rpm",      rpm);
+        SmartDashboard.putNumber("setpoint", setpointRPM);
+        SmartDashboard.putNumber("ff",       ffVolts);
+        SmartDashboard.putNumber("pid",      pidVolts);
+    }
+}`}
+  hint="Compare this to the PID-only simulation in the previous lesson. The FF alone gets the flywheel very close to the setpoint without needing large gains. Try setting kP=0 — notice how well the feedforward alone holds the speed. Then re-enable kP and see how quickly it corrects."
 />
 
 ## What's next

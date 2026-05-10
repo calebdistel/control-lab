@@ -18,6 +18,7 @@ import Warn from '../../../components/Warn.astro';
 import CodeTrace from '../../../components/demos/CodeTrace.jsx';
 import Quiz from '../../../components/demos/Quiz.jsx';
 import CodeEditor from '../../../components/demos/CodeEditor.jsx';
+import RobotSimEditor from '../../../components/demos/RobotSimEditor.jsx';
 
 ## Hook
 
@@ -297,6 +298,42 @@ Compute P, I, D, and total output for each loop. Track the integral accumulator 
   ]}
   correct={1}
   explanation="After 10 seconds with error=50, the integrator has accumulated 50 * 10 = 500 (ignoring dt scaling). When the obstacle is removed, the large I term will command excessive output causing significant overshoot — this is integrator windup. Use setIZone() to prevent the integrator from building up during large, sustained errors."
+/>
+
+## Simulation: PID flywheel controller
+
+<RobotSimEditor
+  client:load
+  type="flywheel"
+  starterCode={`public class PIDController {
+    static double kP = 0.002;
+    static double kI = 0.0001;
+    static double kD = 0.0;
+    static double setpointRPM = 4000.0;
+
+    static double integrator = 0.0;
+    static double lastError  = 0.0;
+    static boolean first     = true;
+    static double dt         = 0.02;
+
+    public static void periodic() {
+        double rpm   = getRPM();
+        double error = setpointRPM - rpm;
+
+        integrator += error * dt;
+        double dTerm = first ? 0.0 : kD * (error - lastError) / dt;
+        double output = kP * error + kI * integrator + dTerm;
+
+        setVoltage(output);
+        lastError = error;
+        first = false;
+
+        SmartDashboard.putNumber("rpm",      rpm);
+        SmartDashboard.putNumber("setpoint", setpointRPM);
+        SmartDashboard.putNumber("voltage",  output);
+    }
+}`}
+  hint="Try turning off kI (set to 0) and observe steady-state error. Re-enable kI to eliminate it. Then try kD=0.01 to see if D helps or hurts. Note that PID-only (no feedforward) requires high gains to reach the setpoint, which risks instability."
 />
 
 ## What's next
