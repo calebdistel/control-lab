@@ -48,6 +48,16 @@ export function transpile(java) {
   code = code.replace(/\bSystem\.out\.print\s*\(\s*\)/g, '__print("")');
   code = code.replace(/\bSystem\.out\.print\s*\(/g, '__print(');
 
+  // SmartDashboard / NetworkTables → worker-provided telemetry functions
+  code = code.replace(/\bSmartDashboard\.putNumber\s*\(/g,  '__telNum(');
+  code = code.replace(/\bSmartDashboard\.putBoolean\s*\(/g, '__telBool(');
+  code = code.replace(/\bSmartDashboard\.putString\s*\(/g,  '__telStr(');
+  code = code.replace(/\bSmartDashboard\.putData\s*\([^)]+\)\s*;?/g, '');
+  // getters return the supplied default value
+  code = code.replace(/\bSmartDashboard\.getNumber\s*\([^,)]+,\s*([^)]+)\)/g,  '($1)');
+  code = code.replace(/\bSmartDashboard\.getBoolean\s*\([^,)]+,\s*([^)]+)\)/g, '($1)');
+  code = code.replace(/\bSmartDashboard\.getString\s*\([^,)]+,\s*([^)]+)\)/g,  '($1)');
+
   // String.equals(): repeated to handle chained calls on same line
   for (let i = 0; i < 6; i++) {
     code = code.replace(/(\w+)\.equals\s*\(([^()]+)\)/g, '($1 === $2)');

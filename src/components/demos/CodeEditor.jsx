@@ -85,9 +85,19 @@ self.onmessage = function({ data: { js } }) {
   let __buf = '';
   function __println(x) { __buf += (x === null || x === undefined ? 'null' : String(x)) + '\\n'; }
   function __print(x)   { __buf += (x === null || x === undefined ? 'null' : String(x)); }
+  // SmartDashboard telemetry — no-ops in unit-test mode
+  function __telNum()  {}
+  function __telBool() {}
+  function __telStr()  {}
+  // Extended Math with common Java methods JS is missing
+  const _ExtMath = Object.assign(Object.create(Math), {
+    toRadians: d => d * Math.PI / 180,
+    toDegrees: r => r * 180 / Math.PI,
+    signum:    x => Math.sign(x),
+  });
   try {
-    const run = new Function('__println', '__print', 'Math', js);
-    run(__println, __print, Math);
+    const run = new Function('__println', '__print', 'Math', '__telNum', '__telBool', '__telStr', js);
+    run(__println, __print, _ExtMath, __telNum, __telBool, __telStr);
     self.postMessage({ stdout: __buf, stderr: '' });
   } catch (err) {
     self.postMessage({ stdout: __buf, stderr: err.toString() });
@@ -108,8 +118,16 @@ function runDirect(js) {
   let __buf = '';
   const __println = (x) => { __buf += (x === null || x === undefined ? 'null' : String(x)) + '\n'; };
   const __print   = (x) => { __buf += (x === null || x === undefined ? 'null' : String(x)); };
+  const noop = () => {};
+  const ExtMath = Object.assign(Object.create(Math), {
+    toRadians: d => d * Math.PI / 180,
+    toDegrees: r => r * 180 / Math.PI,
+    signum:    x => Math.sign(x),
+  });
   try {
-    new Function('__println', '__print', 'Math', js)(__println, __print, Math);
+    new Function('__println', '__print', 'Math', '__telNum', '__telBool', '__telStr', js)(
+      __println, __print, ExtMath, noop, noop, noop
+    );
     return Promise.resolve({ stdout: __buf, stderr: '', code: 0 });
   } catch (err) {
     return Promise.resolve({ stdout: __buf, stderr: err.toString(), code: 1 });
